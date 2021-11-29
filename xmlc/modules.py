@@ -1,8 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from treelib import Tree
 from torch import Tensor
 from typing import Tuple, Callable
+from .tree_utils import yield_tree_levels
 
 class MLP(nn.Module):
     """ Multi-Layer Perceptron """
@@ -77,8 +79,8 @@ class MultiHeadAttention(nn.MultiheadAttention):
         return attn_out.transpose(0, 1)
  
 
-class PLTHierarchy(nn.Module):
-    """ Classifier Model for a Hierarchy of a Probability Label Tree """
+class LabelAttentionClassifier(nn.Module):
+    """ Multi-label classifier based on label-attention """
 
     def __init__(self,
         hidden_size:int,
@@ -88,7 +90,7 @@ class PLTHierarchy(nn.Module):
         dropout:float =0.2
     ) -> None:
         # initialize module
-        super(PLTHierarchy, self).__init__()
+        super(LabelAttentionClassifier, self).__init__()
         # save the attention and classifier module
         self.att = attention
         self.cls = classifier
@@ -112,3 +114,43 @@ class PLTHierarchy(nn.Module):
         m = self.att(x, mask, label_emb)
         # apply classifier
         return self.cls(m).squeeze(-1)
+
+
+class ProbabilityLabelTree(nn.Module):
+    """ Probability Label Tree """
+    
+    def __init__(self,
+        tree:Tree,
+        cls_factory:Callable[[int], nn.Module]
+    ) -> None:
+        # initialize module
+        super(ProbabilityLabelTree, self).__init__()
+        # create a classifier per hierarchy
+        self.classifiers = nn.ModuleList([
+            cls_factory(num_labels) 
+            for i, num_labels in enumerate(
+                map(len, yield_tree_levels(tree)
+            )) if i > 0 # ignore root
+        ])
+        
+    def forward(self, 
+        *args,
+        candidate_paths:torch.LongTensor,
+        **kwargs
+    ) -> torch.FloatTensor:
+        # make sure the data and classifier tree depths match
+        assert candidate_paths.size(1) == len(self.classifiers)
+        # classify each level
+        all_logits = []
+        for i, cls in enumerate(self.classifiers):
+            # uniquify candidates to reduce computational overhead
+            candidates = candidate_paths[:, i, :]
+            candidates, inv_idx = torch.unique(candidates, return_inverse=True, dim=-1)
+            # predict and compute logits for current level
+            logits = cls(*args, candidates=candidates, **kwargs)
+            all_logits.append(logits[:, inv_idx])
+        # stack all logits and apply sigmoid to compute probabilities
+        logits = torch.stack(all_logits, dim=0)
+        probs = torch.sigmoid(logits)
+        # multiply probabilities of all levels to compute final label probs
+        return probs.prod(dim=0) 
