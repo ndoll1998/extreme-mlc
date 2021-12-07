@@ -14,11 +14,12 @@ class PLTOutput(ModelOutput):
     candidates:torch.LongTensor =None
     mask:torch.BoolTensor =None
 
-    def cpu(self):
+    def cpu(self) -> "PLTOutput":
         # move all to cpu
         self.probs = self.probs.cpu()
         self.candidates = self.candidates.cpu()
         self.mask = self.mask.cpu()
+        return self
 
     def topk(self, k:int) -> "PLTOutput":
         b = self.probs.size(0)

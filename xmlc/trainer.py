@@ -332,7 +332,7 @@ class LevelTrainer(__Trainer):
                     # apply model and collect all outputs
                     inputs = {key: tensor.to(self.args.device) for key, tensor in inputs.items()}
                     model_out = self.plt(**inputs, topk=self.k, restrict_depth=self.level+1)
-                    outputs.append(model_out.topk(k=self.k))
+                    outputs.append(model_out.topk(k=self.k).cpu())
             # concatenate all model outputs to build group weights
             weights = GroupWeights(
                 weights=torch.cat([out.probs for out in outputs], dim=0),

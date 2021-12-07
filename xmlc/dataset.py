@@ -37,12 +37,11 @@ class MultiLabelDataset(Dataset):
         self.labels = [set(l) for l in labels]
         self.label_pool = label_pool
         # check if candidate sampling is needed
-        self.sampling_disabled = (num_candidates == len(self.label_pool))
+        self.sampling_disabled = (self.num_candidates == len(self.label_pool))
         # some quick tests
         n, m = len(self.labels), len(self.input_dataset)
         assert n == m, "Labels (%i) and Input Dataset (%i) do not align!" % (n, m)
         assert all(l in label_pool for ls in labels for l in ls), "Not all labels are present in the label pool!"
-        assert self.num_candidates <= len(self.label_pool)
         
     def sample_candidates(self, index:int, positives:Set[int]) -> Set[int]:
         # choose candidates completely random but make sure positives are contained
