@@ -52,17 +52,28 @@ def index_tree(tree:Tree) -> Tree:
     return tree
 
 
-def propagate_labels_upwards(
+def propagate_labels_to_level(
     tree:Tree,
-    labels:List[str]
-) -> List[str]:
-    """ Propagate labels one levels upwards through label tree """
-    return [tree.parent(i).identifier for i in labels]
-
+    labels:List[Set[int]],
+    level:int
+) -> List[Set[int]]:
+    """ propagate the list of label-sets up to the given level
+        assuming that the labels are currently at lowest level
+    """
+    for _ in range(tree.depth() - 1 - level):
+        labels = [
+            set((tree.parent(i).identifier for i in ls))
+            for ls in labels
+        ]
+    # return the propagated labels
+    return labels
 
 def convert_labels_to_ids(
     tree:Tree,
-    labels:List[Set[Any]]
+    labels:List[Set[str]]
 ) -> List[Set[int]]:
     """ Convert labels to label-ids given by the level-indices of the corresponding nodes """
-    return [tree[i].data.level_index for i in labels]    
+    return [
+        set((tree[i].data.level_index for i in ls))
+        for ls in labels
+    ]    

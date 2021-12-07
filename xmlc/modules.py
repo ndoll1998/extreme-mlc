@@ -21,6 +21,9 @@ class MLP(nn.Module):
             nn.Linear(n, m, bias=bias)
             for n, m in zip(layers[:-1], layers[1:])
         ])
+        # initialize weights with xavier uniform
+        for layer in self.layers:
+            nn.init.xavier_uniform_(layer.weight)
         # save activation function
         self.act_fn = act_fn
 
@@ -35,14 +38,6 @@ class MLP(nn.Module):
 class Attention(nn.Module):
     """ Linear Attention Module used in original AttentionXML implementation """    
 
-    def __init__(self,
-        dropout:float =0.2,
-    ) -> None:
-        # initialize module
-        super(Attention, self).__init__()
-        # save dropout
-        self.dropout = dropout
-
     def forward(self,
         x:torch.FloatTensor, 
         mask:torch.BoolTensor, 
@@ -50,15 +45,14 @@ class Attention(nn.Module):
     ) -> torch.FloatTensor:
         # compute attention scores
         scores = x @ label_emb.transpose(1, 2)
-        scores = torch.softmax(scores, dim=-1)
-        scores = scores.masked_fill(~mask.unsqueeze(-1), 0)
-        scores = F.dropout(scores, p=self.dropout, training=self.training)
+        scores = scores.masked_fill(~mask.unsqueeze(-1), -1e5)
+        scores = torch.softmax(scores, dim=-2)
         # compute label-aware embeddings
         return scores.transpose(1, 2) @ x
 
 
 class MultiHeadAttention(nn.MultiheadAttention):
-    """ Multi-Head Attention Module for PLT-Hierarchy Models """
+    """ Multi-Head Attention Module that can be used in a `LabelAttentionClassifier` Module """
 
     def forward(self,
         x:torch.FloatTensor, 
@@ -80,14 +74,13 @@ class MultiHeadAttention(nn.MultiheadAttention):
  
 
 class LabelAttentionClassifier(nn.Module):
-    """ Multi-label classifier based on label-attention """
+    """ Label-attention based Multi-Label Classifier """
 
     def __init__(self,
         hidden_size:int,
         num_labels:int,
         attention:nn.Module,
-        classifier:nn.Module,
-        dropout:float =0.2
+        classifier:nn.Module
     ) -> None:
         # initialize module
         super(LabelAttentionClassifier, self).__init__()
@@ -100,57 +93,25 @@ class LabelAttentionClassifier(nn.Module):
             embedding_dim=hidden_size,
             sparse=False
         )
-        # save dropout prob
-        self.dropout = dropout
+        # use xavier uniform for initialization
+        nn.init.xavier_uniform_(self.label_embed.weight)
 
     def forward(self,
         x:torch.FloatTensor,
         mask:torch.BoolTensor,
-        candidates:torch.LongTensor
+        candidates:torch.LongTensor =None
     ) -> torch.FloatTensor:
+        # use all embeddings if no candidates are provided
+        if candidates is None:
+            n = self.label_embed.num_embeddings
+            candidates = torch.arange(n).unsqueeze(0)
+            candidates = candidates.repeat(x.size(0), 1)
+            candidates = candidates.to(x.device)
         # get label embeddings and apply attention layer
         label_emb = self.label_embed(candidates)
-        label_emb = F.dropout(label_emb, p=self.dropout, training=self.training)
         m = self.att(x, mask, label_emb)
         # apply classifier
         return self.cls(m).squeeze(-1)
 
 
-class ProbabilityLabelTree(nn.Module):
-    """ Probability Label Tree """
-    
-    def __init__(self,
-        tree:Tree,
-        cls_factory:Callable[[int], nn.Module]
-    ) -> None:
-        # initialize module
-        super(ProbabilityLabelTree, self).__init__()
-        # create a classifier per hierarchy
-        self.classifiers = nn.ModuleList([
-            cls_factory(num_labels) 
-            for i, num_labels in enumerate(
-                map(len, yield_tree_levels(tree)
-            )) if i > 0 # ignore root
-        ])
-        
-    def forward(self, 
-        *args,
-        candidate_paths:torch.LongTensor,
-        **kwargs
-    ) -> torch.FloatTensor:
-        # make sure the data and classifier tree depths match
-        assert candidate_paths.size(1) == len(self.classifiers)
-        # classify each level
-        all_logits = []
-        for i, cls in enumerate(self.classifiers):
-            # uniquify candidates to reduce computational overhead
-            candidates = candidate_paths[:, i, :]
-            candidates, inv_idx = torch.unique(candidates, return_inverse=True, dim=-1)
-            # predict and compute logits for current level
-            logits = cls(*args, candidates=candidates, **kwargs)
-            all_logits.append(logits[:, inv_idx])
-        # stack all logits and apply sigmoid to compute probabilities
-        logits = torch.stack(all_logits, dim=0)
-        probs = torch.sigmoid(logits)
-        # multiply probabilities of all levels to compute final label probs
-        return probs.prod(dim=0) 
+

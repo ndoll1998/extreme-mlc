@@ -1,182 +1,161 @@
 import torch
 from torch import Tensor
-from treelib import Tree
+from torch.utils.data import Dataset, TensorDataset
+from .utils import build_group_membership
 from random import sample
-from torch.utils.data import Dataset
-from itertools import chain, groupby
-from typing import List, Tuple, Set
-from .tree_utils import propagate_labels_upwards, convert_labels_to_ids
+from itertools import chain
+from dataclasses import dataclass
+from typing import Dict, List, Set, Tuple
 
-class __LabelTreeDataset(Dataset):
-    """ Abstract Label Tree Dataset 
-        Child Classes have to overwrite the `sample_candidates` function.
-    """
+class NamedTensorDataset(TensorDataset):
+    """ Named Tensor Dataset """
+    
+    def __init__(self, **named_tensors) -> None:
+        # get tupel of tensor names
+        self.names = tuple(named_tensors.keys())
+        tensors = (named_tensors[n] for n in self.names)
+        # initialize tensor dataset
+        super(NamedTensorDataset, self).__init__(*tensors)
 
+    def __getitem__(self, index) -> Dict[str, Tensor]:
+        # get tensors and add names
+        tensors = tuple(tensor[index] for tensor in self.tensors)
+        return dict(zip(self.names, tensors))
+
+class MultiLabelDataset(Dataset):
+    """ Simple Multi-label Classification Dataset """
+    
     def __init__(self,
         input_dataset:Dataset,
-        tree:Tree,
-        labels:List[Set[str]],
+        labels:List[Set[int]],
+        label_pool:Set[int],
         num_candidates:int
     ) -> None:
         # save arguments
         self.input_dataset = input_dataset
-        self.num_candidates = num_candidates
+        self.num_candidates = min(num_candidates, len(label_pool))
         self.labels = [set(l) for l in labels]
-        self.tree = tree
-        # get the depth of the tree once here
-        # this is incredibly computational heavy
-        self.path_len = tree.depth() - 1 # ignore root in paths
+        self.label_pool = label_pool
+        # check if candidate sampling is needed
+        self.sampling_disabled = (num_candidates == len(self.label_pool))
         # some quick tests
         n, m = len(self.labels), len(self.input_dataset)
         assert n == m, "Labels (%i) and Input Dataset (%i) do not align!" % (n, m)
+        assert all(l in label_pool for ls in labels for l in ls), "Not all labels are present in the label pool!"
+        assert self.num_candidates <= len(self.label_pool)
         
-    def sample_candidates(self, positives:Set[str]) -> Set[str]:
-        raise NotImplementedError()
+    def sample_candidates(self, index:int, positives:Set[int]) -> Set[int]:
+        # choose candidates completely random but make sure positives are contained
+        positives = sample(positives, k=min(len(positives), self.num_candidates//2))
+        negatives = sample(
+            self.label_pool - set(positives), 
+            k=self.num_candidates - len(positives)
+        )
+        return set(chain(positives, negatives))
         
     def __len__(self) -> int:
         return len(self.input_dataset)
-    
+
     def __getitem__(self, index:int) -> Tuple[Tensor]:
-        
         # gather inputs and labels
         inputs = self.input_dataset[index]
         labels = self.labels[index]
-
-        # generate candidates
-        candidates = self.sample_candidates(labels)
-        assert len(candidates) == self.num_candidates
-        
-        # build target label tensor
+        # generate candidates and build targets
+        candidates = tuple(self.label_pool if self.sampling_disabled else \
+            self.sample_candidates(index, labels))
         targets = [int(c in labels) for c in candidates]
-        labels = torch.FloatTensor(targets)
-        
-        # for each candidate build the path to the root node
-        # the lowest level in each path corresponds to the candidate
-        paths = torch.zeros((self.path_len + 1, self.num_candidates), dtype=torch.long)
-        paths[-1, :] = torch.LongTensor(convert_labels_to_ids(self.tree, candidates))
-        # build paths to root
-        for i in range(self.path_len-1, -1, -1):
-            candidates = propagate_labels_upwards(self.tree, candidates)
-            paths[i, :] = torch.LongTensor(convert_labels_to_ids(self.tree, candidates))
+        assert len(candidates) == self.num_candidates
+        # convert to tensors
+        candidates = torch.LongTensor(candidates)
+        targets = torch.FloatTensor(targets)
         # return all features
-        return inputs + (paths, labels)
+        return {
+            'candidates': candidates, 
+            'labels': targets,
+            **inputs
+        }
 
+@dataclass
+class GroupWeights(object):
+    """ Helper class managing the weights of label-groups """
+    weights:torch.FloatTensor =None
+    layout:torch.LongTensor =None
+    mask:torch.BoolTensor =None
     
-class LabelTreePureRandomDataset(__LabelTreeDataset):
-    """ Label Tree Pure Random Dataset
-        Candidates are sampled arbitrary of their group and relation to positive
-        candidates, e.g. draw n candidates from a label pool containing all negative labels
+    def get_weights(self, 
+        index:int, 
+        group_ids:torch.LongTensor
+    ) -> torch.FloatTensor:
+        # find groups in layout
+        mask = (self.layout[index, :].unsqueeze(0) == group_ids.unsqueeze(1))
+        idx = torch.where(mask)[1]
+        # build weight vector for given groups
+        w = torch.zeros_like(group_ids, dtype=torch.float)
+        w[mask.any(dim=-1)] = self.weights[index, idx]
+        # return weight vector
+        return w
+        
+class GroupWeightedMultiLabelDataset(MultiLabelDataset):
+    """ Multi-label dataset where labels are organized into groups and
+        groups are wheighted indicating how probable their members are
+        for the corresponding inputs
+
+        The candidate selection first chooses members from the groups containing
+        positive labels and afterwards selects candidates from negative groups but
+        prefering the probable groups
     """
-    
+
     def __init__(self,
         input_dataset:Dataset,
-        tree:Tree,
-        labels:List[Set[str]],
+        labels:List[Set[int]],
+        label_pool:Set[int],
         num_candidates:int,
+        groups:Dict[int, Set[int]],
+        group_weights:GroupWeights
     ) -> None:
-        # initialize base dataset
-        super(LabelTreePureRandomDataset, self).__init__(
+        # initialize multi-label dataset
+        super(GroupWeightedMultiLabelDataset, self).__init__(
             input_dataset=input_dataset,
-            tree=tree,
             labels=labels,
+            label_pool=label_pool,
             num_candidates=num_candidates
         )
-        # get a flat list of all candidates
-        self.label_pool = set((n.identifier for n in tree.leaves()))
-    
-    def sample_candidates(self, positives:Set[str]) -> Set[str]:
+        # save group information
+        self.groups = groups
+        self.weights = group_weights
+        self.group_membership = build_group_membership(groups)
         
-        # at most half of the labels are positives
-        n_positives = min(len(positives), self.num_candidates//2)
-        positives = sample(tuple(positives), k=n_positives)
-        # the rest are negative samples
-        n_negatives = self.num_candidates - n_positives
-        negative_pool = tuple(filter(lambda l: l not in positives, self.label_pool))
-        negatives = sample(negative_pool, k=n_negatives)
-        # concatenate candidates and build labels
-        return list(chain(positives, negatives))
-
-
-class LabelTreeGroupBasedDataset(__LabelTreeDataset):
-    """ Label Tree Group-based Dataset
-        Sample almost all candidates from the groups containing the positives
-        Add some random candidates to increase model robustness
-    """
-    def __init__(self,
-        input_dataset:Dataset,
-        tree:Tree,
-        labels:List[Set[str]],
-        num_candidates:int,
-    ) -> None:
-        # initialize base dataset
-        super(LabelTreeGroupBasedDataset, self).__init__(
-            input_dataset=input_dataset,
-            tree=tree,
-            labels=labels,
-            num_candidates=num_candidates
+    def sample_candidates(self, index:int, positives:Set[int]) -> Set[int]:
+        # get the positive groups and sort them by their weights
+        positive_groups = self.group_membership[list(positives)].unique()
+        weights = self.weights.get_weights(index, positive_groups)
+        positive_groups = positive_groups[weights.argsort(descending=True)]
+        # build negative candidates from positive groups
+        negatives = chain(*(
+            self.groups[group_id.item()] - positives 
+            for group_id in positive_groups)
         )
-        # get a flat list of all candidates
-        self.label_pool = set((n.identifier for n in tree.leaves()))
-        # build all groups for easier access later
-        self.label_groups = {
-            group.identifier: set((n.identifier for n in self.tree.children(group.identifier)))
-            for group in self.tree.filter_nodes(lambda n: not n.is_leaf(self.tree.identifier))
-        }
-    
-    def sample_candidates(self, positives:Set[str]) -> Set[str]:
+        # build candidates and check if num_candidates is already fulfilled
+        candidates = tuple(chain(positives, negatives))
+        candidates = candidates[:self.num_candidates]
+        if len(candidates) == self.num_candidates:
+            return candidates
         
-        # flat all positives
-        grouped_labels = {
-            group: set(members)
-            for group, members in groupby(
-                iterable=positives, 
-                key=lambda i: self.tree.parent(i).identifier
-            )
-        }
-        
-        # some candidates are sampled completely arbitrary
-        num_random_candidates = max(1, int(0.05 * self.num_candidates))
-        num_group_candidates = self.num_candidates - num_random_candidates
-        # compute number of candidates per group
-        num_groups = len(grouped_labels)
-        num_candidates_per_group = [num_group_candidates // num_groups] * num_groups
-        num_candidates_per_group[0] = (num_group_candidates - sum(num_candidates_per_group[1:]))
-        assert sum(num_candidates_per_group) == num_group_candidates
-        
-        # cut the positive samples to guarantee that 
-        # they take up at most half the candidates per group
-        grouped_positive_candidates = {
-            g: sample(
-                tuple(labels), 
-                k=min(len(labels), n // 2)
-            ) for n, (g, labels) in zip(
-                num_candidates_per_group,
-                grouped_labels.items()
-            )
-        }
-        # generate negative samples per group
-        # note that we filter out all positives to make
-        # sure we end up with negative samples
-        grouped_negative_candidates = {
-            g: sample(
-                tuple(self.label_groups[g] - positives),
-                k=n - len(labels)
-            ) for n, (g, labels) in zip(
-                num_candidates_per_group,
-                grouped_positive_candidates.items()
-            )
-        }
-        
-        # concatenate labels and samples to build full candidate list
-        candidates = set(chain(
-            *grouped_positive_candidates.values(),
-            *grouped_negative_candidates.values()
+        # get the negative groups and sort them by their weights
+        negative_groups = torch.LongTensor([g for g in self.groups if g not in positive_groups])
+        weights = self.weights.get_weights(index, negative_groups)
+        negative_groups = negative_groups[weights.argsort(descending=True)]
+        # build negative candidates from negative groups
+        negatives = chain(*(
+            self.groups[group_id.item()]
+            for group_id in negative_groups
         ))
-        
-        # add some random samples
-        random_negative_candidates = sample(
-            tuple(self.label_pool - positives - candidates),
-            k=num_random_candidates
-        )
-        # return all candidates
-        return list(chain(candidates, random_negative_candidates))
+        # add negatives to candidates
+        candidates = tuple(chain(candidates, negatives))
+        candidates = candidates[:self.num_candidates]
+        # at this point the num_candidates condition must be fulfilled
+        # as the each possible label was considered as either part of a
+        # positive group or a negative group
+        assert len(candidates) == self.num_candidates
+        # return the candidates
+        return candidates
