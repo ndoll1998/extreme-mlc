@@ -33,9 +33,11 @@ class MultiLabelDataset(Dataset):
     ) -> None:
         # save arguments
         self.input_dataset = input_dataset
-        self.num_candidates = min(num_candidates, len(label_pool))
         self.labels = [set(l) for l in labels]
         self.label_pool = label_pool
+        # set number of candidates to use
+        num_candidates = len(label_pool) if num_candidates is None else num_candidates
+        self.num_candidates = min(num_candidates, len(label_pool))
         # check if candidate sampling is needed
         self.sampling_disabled = (self.num_candidates == len(self.label_pool))
         # some quick tests

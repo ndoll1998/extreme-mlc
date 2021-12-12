@@ -47,16 +47,36 @@ class MetricsTracker(object):
             self.metrics[key].append(value)
         # return metrics that will be logged
         return {'loss': train_loss, 'eval_loss': eval_loss, **log_metrics}
+
+    def final_metrics(self) -> Dict[str, Any]:
+        return self[-1]
     
     def __call__(self, *args, **kwargs):
         return self.evaluate(*args, **kwargs)
 
     def __getitem__(self, key) -> List[Any]:
-        return self.metrics[key]
+        if isinstance(key, str):
+            return self.metrics[key]
+        elif isinstance(key, int):
+            return {m: values[key] for m, values in self.metrics.items()}
 
     def __getattr__(self, name):
         if name in self.metrics:
             return self.metrics[name]
+
+    def __len__(self) -> int:
+        return len(self.steps)
+
+    def to_csv(self, fpath:str) -> None:
+        
+        columns = list(self.metrics.keys())
+        # build csv content
+        csv = ','.join(columns)
+        for i in range(len(self)):
+            csv += "\n" + ",".join([str(self.metrics[key][i]) for key in columns])
+        # write to file
+        with open(fpath, "w+") as f:
+            f.write(csv)
 
 
 def precision(
@@ -112,4 +132,56 @@ def hits(
     best = torch.sparse.sum(sparse_targets, dim=-1).to_dense()
     best = torch.minimum(best, ks)
     return hits.item() / best.sum().item()
+
+class PrecisionCoverageHits(MetricsTracker):
+        
+    def prepare(self, 
+        preds:torch.Tensor, 
+        labels:torch.Tensor
+    ):
+        # convert to long tensors
+        preds = torch.LongTensor(preds)
+        labels = torch.LongTensor(labels)
+        # get the maximum label
+        num_labels = max(
+            preds.max().item(), 
+            labels.max().item()
+        ) + 1
+        # build sparse targets
+        sparse_targets = build_sparse_tensor(
+            args=labels,
+            mask=(labels >= 0),
+            size=(labels.size(0), num_labels)
+        )
+        # return prepared tensors
+        return preds, sparse_targets
+
+    def compute_log_metrics(self, preds, sparse_targets):
+        return {
+            # precision @ k
+            "P@1": precision(preds, sparse_targets, k=1),
+            "P@5": precision(preds, sparse_targets, k=5),
+            # coverage @ k
+            "C@1": coverage(preds, sparse_targets, k=1),
+            "C@5": coverage(preds, sparse_targets, k=5),
+            # hits @ k
+            "H@1": hits(preds, sparse_targets, k=1),
+            "H@5": hits(preds, sparse_targets, k=5),
+        }
+    
+    def compute_additional_metrics(self, preds, sparse_targets):
+        return {
+            # precision @ k
+            "P@2": precision(preds, sparse_targets, k=2),
+            "P@3": precision(preds, sparse_targets, k=3),
+            "P@4": precision(preds, sparse_targets, k=4),
+            # coverage @ k
+            "C@2": coverage(preds, sparse_targets, k=2),
+            "C@3": coverage(preds, sparse_targets, k=3),
+            "C@4": coverage(preds, sparse_targets, k=4),
+            # hits @ k
+            "H@2": hits(preds, sparse_targets, k=2),
+            "H@3": hits(preds, sparse_targets, k=3),
+            "H@4": hits(preds, sparse_targets, k=4),
+        }
 

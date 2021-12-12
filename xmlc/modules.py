@@ -35,8 +35,8 @@ class MLP(nn.Module):
         return self.layers[-1](x)
 
 
-class Attention(nn.Module):
-    """ Linear Attention Module used in original AttentionXML implementation """    
+class SoftmaxAttention(nn.Module):
+    """ Linear Softmax Attention Module used in original AttentionXML implementation """    
 
     def forward(self,
         x:torch.FloatTensor, 
@@ -49,7 +49,6 @@ class Attention(nn.Module):
         scores = torch.softmax(scores, dim=-2)
         # compute label-aware embeddings
         return scores.transpose(1, 2) @ x
-
 
 class MultiHeadAttention(nn.MultiheadAttention):
     """ Multi-Head Attention Module that can be used in a `LabelAttentionClassifier` Module """
@@ -80,13 +79,13 @@ class LabelAttentionClassifier(nn.Module):
         hidden_size:int,
         num_labels:int,
         attention:nn.Module,
-        classifier:nn.Module
+        mlp:MLP
     ) -> None:
         # initialize module
         super(LabelAttentionClassifier, self).__init__()
-        # save the attention and classifier module
+        # save the attention and mlp module
         self.att = attention
-        self.cls = classifier
+        self.mlp = mlp
         # create label embedding
         self.label_embed = nn.Embedding(
             num_embeddings=num_labels,
@@ -111,7 +110,7 @@ class LabelAttentionClassifier(nn.Module):
         label_emb = self.label_embed(candidates)
         m = self.att(x, mask, label_emb)
         # apply classifier
-        return self.cls(m).squeeze(-1)
+        return self.mlp(m).squeeze(-1)
 
 
 
