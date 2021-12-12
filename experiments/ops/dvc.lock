@@ -1,0 +1,135 @@
+schema: '2.0'
+stages:
+  prepare:
+    cmd: python ../../src/prepare.py --code-type ops_codes --train-source /data/share/gsg_consulting/ehahn/preprocessing_pipeline/data/ops/all_hospitals_filtered_ops.csv
+      --test-source /data/share/gsg_consulting/ehahn/preprocessing_pipeline/data/ops/all_hospitals_filtered_ops_check.csv
+      --min-label-freq 10 --max-num-labels -1 --output-dir data/prepared
+    params:
+      params.yaml:
+        prepare.MaxNumberLabels: -1
+        prepare.MinLabelFrequency: 10
+    outs:
+    - path: data/prepared/hospitals.txt
+      md5: 2ce0ad1321eedd3f9665cebaaeee6b00
+      size: 109
+    - path: data/prepared/labels.txt
+      md5: 651f5e5bafff45063ea96d801e72cdab
+      size: 23223
+    - path: data/prepared/metrics.json
+      md5: 8340a5b24f70662d9a9155f29f8226b3
+      size: 297
+    - path: data/prepared/test_labels.txt
+      md5: 5fbce286d0cc49284593d0f6e2461d75
+      size: 334765
+    - path: data/prepared/test_texts.txt
+      md5: 36e47c773e8291675161691f442e8f7c
+      size: 66622268
+    - path: data/prepared/train_labels.txt
+      md5: 188bd81575fcf3f4043de947f50ed71c
+      size: 4449471
+    - path: data/prepared/train_texts.txt
+      md5: d93f5e9deec93a32dd103a37c61bff2e
+      size: 1030291373
+  preprocess:
+    cmd: python ../../src/preprocess.py --train-texts data/prepared/train_texts.txt
+      --test-texts data/prepared/test_texts.txt --tokenizer Spacy --max-length 256
+      --pretrained-vocab ../../pretrained/gsg-fasttext/vocab.npy --pretrained-embed
+      ../../pretrained/gsg-fasttext/vectors.npy --output-dir data/preprocessed
+    deps:
+    - path: data/prepared/test_texts.txt
+      md5: 36e47c773e8291675161691f442e8f7c
+      size: 66622268
+    - path: data/prepared/train_texts.txt
+      md5: d93f5e9deec93a32dd103a37c61bff2e
+      size: 1030291373
+    params:
+      params.yaml:
+        preprocess.embedding: gsg-fasttext
+        preprocess.max_length: 256
+        preprocess.tokenizer: Spacy
+    outs:
+    - path: data/preprocessed/metrics.json
+      md5: 10347235fc8cce7dab9eacc24c04d7f5
+      size: 124
+    - path: data/preprocessed/test_input_ids.pkl
+      md5: 0201d01bdded06eb3dddb4171efc6bfd
+      size: 43100920
+    - path: data/preprocessed/train_input_ids.pkl
+      md5: 957ee0355d54ca6704ec216159c364e8
+      size: 582875896
+    - path: data/preprocessed/vectors.npy
+      md5: 42ee543b8dd8a111b72c5737d6d697ff
+      size: 460672128
+    - path: data/preprocessed/vocab.json
+      md5: e2e7d8c59af0c234a82cc43c3a2d2a60
+      size: 2649721
+  build_label_tree:
+    cmd: PYTHONPATH='../../' python ../../src/build_label_tree.py --labels-file data/prepared/labels.txt
+      --group-id-chars 0 --output-file model/label_tree.pkl
+    deps:
+    - path: data/prepared/labels.txt
+      md5: 651f5e5bafff45063ea96d801e72cdab
+      size: 23223
+    params:
+      params.yaml:
+        label_tree.group_id_chars: 0
+    outs:
+    - path: model/label_tree.pkl
+      md5: 3a83080fc32dabf984948371e624da02
+      size: 288691
+  train:
+    cmd: PYTHONPATH=../../ python ../../src/train.py --train-input-ids data/preprocessed/train_input_ids.pkl
+      --test-input-ids data/preprocessed/test_input_ids.pkl --train-labels data/prepared/train_labels.txt
+      --test-labels data/prepared/test_labels.txt --vocab data/preprocessed/vocab.json
+      --embed data/preprocessed/vectors.npy --label-tree model/label_tree.pkl --output-dir
+      model
+    deps:
+    - path: data/prepared/test_labels.txt
+      md5: 5fbce286d0cc49284593d0f6e2461d75
+      size: 334765
+    - path: data/prepared/train_labels.txt
+      md5: 188bd81575fcf3f4043de947f50ed71c
+      size: 4449471
+    - path: data/preprocessed/test_input_ids.pkl
+      md5: 0201d01bdded06eb3dddb4171efc6bfd
+      size: 43100920
+    - path: data/preprocessed/train_input_ids.pkl
+      md5: 957ee0355d54ca6704ec216159c364e8
+      size: 582875896
+    - path: data/preprocessed/vectors.npy
+      md5: 42ee543b8dd8a111b72c5737d6d697ff
+      size: 460672128
+    - path: data/preprocessed/vocab.json
+      md5: e2e7d8c59af0c234a82cc43c3a2d2a60
+      size: 2649721
+    - path: model/label_tree.pkl
+      md5: 3a83080fc32dabf984948371e624da02
+      size: 288691
+    params:
+      params.yaml:
+        model.attention.type: softmax-attention
+        model.dropout: 0.5
+        model.encoder.hidden_size: 256
+        model.encoder.num_layers: 1
+        model.mlp.activation: relu
+        model.mlp.bias: true
+        model.mlp.hidden_layers:
+        - 256
+        trainer.eval_batch_size: 256
+        trainer.eval_interval: 5
+        trainer.num_candidates:
+        trainer.num_steps: 10
+        trainer.regime: levelwise
+        trainer.save_interval: 5000
+        trainer.topk: 1
+        trainer.train_batch_size: 128
+    outs:
+    - path: model/metrics.csv
+      md5: 06147054e5f2220088009cd4853b13e7
+      size: 798
+    - path: model/metrics.json
+      md5: 1ad539fe7453121dd659b039c27062f1
+      size: 495
+    - path: model/model.bin
+      md5: 935f24c8c72a88171b8aa679b03e3328
+      size: 242638537

@@ -1,0 +1,32 @@
+schema: '2.0'
+stages:
+  prepare:
+    cmd: python ../../src/prepare.py --code-type icd_codes --train-source /data/share/gsg_consulting/ehahn/preprocessing_pipeline/data/icd/all_hospitals_filtered_icd.csv
+      --test-source /data/share/gsg_consulting/ehahn/preprocessing_pipeline/data/icd/all_hospitals_filtered_icd_check.csv
+      --min-label-freq 10 --max-num-labels -1 --output-dir data/prepared
+    params:
+      params.yaml:
+        prepare.MaxNumberLabels: -1
+        prepare.MinLabelFrequency: 10
+    outs:
+    - path: data/prepared/hospitals.txt
+      md5: 2ce0ad1321eedd3f9665cebaaeee6b00
+      size: 109
+    - path: data/prepared/labels.txt
+      md5: 98017bf9ed8e5c2fca291104e4853a3a
+      size: 35724
+    - path: data/prepared/metrics.json
+      md5: 53c76f9730f15bea39d13bd89e1af01a
+      size: 298
+    - path: data/prepared/test_labels.txt
+      md5: 1a8bb3c8287fbcd7475e7ae23ad0b45e
+      size: 1883146
+    - path: data/prepared/test_texts.txt
+      md5: 655cc83f956bef3244d35dda2d79f0e2
+      size: 281636482
+    - path: data/prepared/train_labels.txt
+      md5: f02a41e18f7b1ae6dabc79eb0d860c18
+      size: 23469590
+    - path: data/prepared/train_texts.txt
+      md5: 7b9aa8b8f4ba9253897fb40168b8adde
+      size: 3653401553
