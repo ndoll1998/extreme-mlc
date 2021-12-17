@@ -5,11 +5,10 @@ from xmlc.utils import build_group_membership
 from xmlc.tree_utils import yield_tree_levels
 from treelib import Tree
 from dataclasses import dataclass
-from transformers.file_utils import ModelOutput
 from typing import Callable
 
 @dataclass
-class PLTOutput(ModelOutput):
+class PLTOutput(object):
     probs:torch.FloatTensor =None
     candidates:torch.LongTensor =None
     mask:torch.BoolTensor =None

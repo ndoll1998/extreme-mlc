@@ -1,5 +1,4 @@
 import torch
-from transformers import EvalPrediction
 from .utils import build_sparse_tensor
 from itertools import chain
 from typing import Any, Dict, List
@@ -8,31 +7,29 @@ class MetricsTracker(object):
     
     def __init__(self):
         # save dict holding all metrics for all evaluations
-        self.metrics = {'steps': [], 'loss': [], 'eval_loss': []}
+        self.metrics = {'steps': [], 'validation_loss': []}
     
     def prepare(self, predictions, targets) -> Any:
         """ prepare predictions and targets for metric computations """
         return eval_preds
         
     def compute_log_metrics(self, *args):
-        """ Compute metrics that will be logged during trainig """
+        """ Compute metrics that will be displayed during trainig """
         return {}
     
     def compute_additional_metrics(self, *args):
-        """ Compute additional metrics that won't be logged """
+        """ Compute additional metrics that won't be displayed in the progress bar """
         return {}
-    
-    def evaluate(self, 
+
+    def compute_metrics(self, 
         step:int,
-        train_loss:float,
-        eval_loss:float,
+        loss:float,
         predictions:torch.Tensor,
         targets:torch.Tensor
     ) -> Dict[str, float]:
         # update default metrics
         self.metrics['steps'].append(step)
-        self.metrics['loss'].append(train_loss)
-        self.metrics['eval_loss'].append(eval_loss)
+        self.metrics['validation_loss'].append(loss)
         # prepare
         prepared = self.prepare(predictions, targets)
         # compute metrics
@@ -46,14 +43,14 @@ class MetricsTracker(object):
             # add metric value to list
             self.metrics[key].append(value)
         # return metrics that will be logged
-        return {'loss': train_loss, 'eval_loss': eval_loss, **log_metrics}
+        return log_metrics, add_metrics
 
+    def __call__(self, *args, **kwargs):
+        return self.compute_metrics(*args, **kwargs)
+    
     def final_metrics(self) -> Dict[str, Any]:
         return self[-1]
     
-    def __call__(self, *args, **kwargs):
-        return self.evaluate(*args, **kwargs)
-
     def __getitem__(self, key) -> List[Any]:
         if isinstance(key, str):
             return self.metrics[key]
@@ -78,7 +75,6 @@ class MetricsTracker(object):
         with open(fpath, "w+") as f:
             f.write(csv)
 
-
 def precision(
     preds:torch.LongTensor,
     sparse_targets:torch.Tensor,
@@ -95,6 +91,34 @@ def precision(
     # compute precision
     hits = torch.sparse.sum(sparse_preds * sparse_targets)
     return hits.item() / (preds.size(0) * k)
+
+def ndcg(
+    preds:torch.LongTensor,
+    sparse_targets:torch.Tensor,
+    k:int
+) -> float:
+    """ Normalized Discounted Cumulative Gain """
+    # get the top-k predictions
+    preds = preds[:, :k]
+    # compute the inverse logs for each prediction
+    inv_logs = 1 / torch.log2(torch.arange(k).float() + 2)
+    inv_logs = inv_logs.unsqueeze(0).repeat(preds.size(0), 1)
+    # build the sparse scaled prediction tensor
+    sparse_scaled_y = build_sparse_tensor(
+        args=preds,
+        mask=(preds >= 0),
+        size=sparse_targets.size(),
+        values=inv_logs    
+    )
+    # handle sparse.sum error when input is all zeros
+    x = sparse_scaled_y * sparse_targets
+    if x._nnz() == 0:
+        return 0.0
+    # compute dcg and normalize it
+    dcg = torch.sparse.sum(x, dim=-1).to_dense()
+    ndcg = dcg / torch.sparse.sum(sparse_scaled_y, dim=-1).to_dense()
+    # return average normalized gains
+    return ndcg.mean().item()
 
 def coverage(
     preds:torch.LongTensor,
@@ -133,7 +157,7 @@ def hits(
     best = torch.minimum(best, ks)
     return hits.item() / best.sum().item()
 
-class PrecisionCoverageHits(MetricsTracker):
+class DefaultMetrics(MetricsTracker):
         
     def prepare(self, 
         preds:torch.Tensor, 
@@ -158,30 +182,25 @@ class PrecisionCoverageHits(MetricsTracker):
 
     def compute_log_metrics(self, preds, sparse_targets):
         return {
-            # precision @ k
-            "P@1": precision(preds, sparse_targets, k=1),
-            "P@5": precision(preds, sparse_targets, k=5),
-            # coverage @ k
-            "C@1": coverage(preds, sparse_targets, k=1),
-            "C@5": coverage(preds, sparse_targets, k=5),
-            # hits @ k
-            "H@1": hits(preds, sparse_targets, k=1),
-            "H@5": hits(preds, sparse_targets, k=5),
+            "P@3": precision(preds, sparse_targets, k=3),
+            "nDCG@3": ndcg(preds, sparse_targets, k=3),
         }
     
     def compute_additional_metrics(self, preds, sparse_targets):
         return {
             # precision @ k
-            "P@2": precision(preds, sparse_targets, k=2),
-            "P@3": precision(preds, sparse_targets, k=3),
-            "P@4": precision(preds, sparse_targets, k=4),
+            "P@1": precision(preds, sparse_targets, k=1),
+            "P@5": precision(preds, sparse_targets, k=5),
+            # ndcg @ k
+            "nDCG@1": ndcg(preds, sparse_targets, k=1),
+            "nDCG@5": ndcg(preds, sparse_targets, k=5),
             # coverage @ k
-            "C@2": coverage(preds, sparse_targets, k=2),
+            "C@1": coverage(preds, sparse_targets, k=1),
             "C@3": coverage(preds, sparse_targets, k=3),
-            "C@4": coverage(preds, sparse_targets, k=4),
+            "C@5": coverage(preds, sparse_targets, k=5),
             # hits @ k
-            "H@2": hits(preds, sparse_targets, k=2),
+            "H@1": hits(preds, sparse_targets, k=1),
             "H@3": hits(preds, sparse_targets, k=3),
-            "H@4": hits(preds, sparse_targets, k=4),
+            "H@5": hits(preds, sparse_targets, k=5),
         }
 

@@ -25,10 +25,9 @@ model:
 
 trainer:
     regime: "levelwise"
-    save_interval: 5000
-    eval_interval: 5
+    eval_interval: 250
     train_batch_size: 128
     eval_batch_size: 256
-    num_steps: 10
+    num_steps: 10_000
     num_candidates: null
     topk: 1

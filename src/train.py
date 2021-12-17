@@ -4,18 +4,18 @@ import json
 import torch
 import pickle
 import numpy as np
+import pytorch_lightning as pl
+import matplotlib.pyplot as plt
 from treelib import Tree
 from typing import Dict, Tuple, List, Any
 # import attention-xml
+from xmlc.trainer import (
+    LevelTrainerModule,
+    InputsAndLabels
+)
 from xmlc.dataset import NamedTensorDataset
 from xmlc.plt import ProbabilisticLabelTree
 from xmlc.utils import build_sparse_tensor
-from xmlc.trainer import (
-    EndToEndTrainer,
-    LevelTrainer,
-    TrainingArgs,
-    InputsAndLabels
-)
 from xmlc.modules import (
     MLP,
     SoftmaxAttention,
@@ -23,7 +23,7 @@ from xmlc.modules import (
 )
 from xmlc.metrics import (
     MetricsTracker,
-    PrecisionCoverageHits
+    DefaultMetrics
 )
 from src.classifiers import LSTMClassifier
 
@@ -108,6 +108,7 @@ def train_end2end(
 ):
     raise NotImplementedError()
 
+
 def train_levelwise(
     tree:Tree,
     model:ProbabilisticLabelTree, 
@@ -122,37 +123,48 @@ def train_levelwise(
     all_metrics = []
     # train each level of the label-tree one after another
     for level in range(model.num_levels - 1):
-        print("# \n# Training Level %i \n#" % level)
+
+        print("-" * 50)
+        print("-" * 17 + ("Training Level %i" % level) + "-" * 17)
+        print("-" * 50)
+
+        # create tensorboard logger
+        logger = pl.loggers.TensorBoardLogger("logs", name="attention-xml", sub_dir="level-%i" % level)
         # create metrics tracker instance
-        metrics = PrecisionCoverageHits()
-        
-        # set training arguments
-        args = TrainingArgs(
-            # saving
-            save_interval=params['save_interval'],
-            save_dir=os.path.join(output_dir, "level-%i" % level),
-            # evaluation
-            eval_interval=params['eval_interval'],
-            # batch sizes
-            train_batch_size=params['train_batch_size'],
-            eval_batch_size=params['eval_batch_size'],
-            # pytorch device
-            device=device,
-            # training loop
-            num_steps=params['num_steps'] 
-        )
-        # build trainer
-        LevelTrainer(
+        metrics = DefaultMetrics()        
+        # create the trainer module
+        trainer_module = LevelTrainerModule(
             level=level,
             tree=tree,
             model=model,
             train_data=train_data,
-            eval_data=test_data,
+            test_data=test_data,
             num_candidates=params['num_candidates'],
-            args=args,
             topk=params['topk'],
+            train_batch_size=params['train_batch_size'],
+            test_batch_size=params['eval_batch_size'],
             metrics=metrics
-        ).train()
+        )
+        # create the trainer
+        trainer = pl.Trainer(
+            gpus=1,
+            auto_select_gpus=True,
+            max_steps=params['num_steps'],
+            val_check_interval=params['eval_interval'],
+            limit_val_batches=8,
+            logger=logger,
+            enable_checkpointing=False,
+            callbacks=[
+                pl.callbacks.early_stopping.EarlyStopping(
+                    monitor="val_loss",
+                    patience=5,
+                    verbose=False
+                )
+            ]
+        )
+        # train the model
+        trainer.fit(trainer_module)
+        
         # all metrics tacker to list
         all_metrics.append(metrics)
 
@@ -208,9 +220,6 @@ if __name__ == '__main__':
         tree=tree,
         cls_factory=cls_factory
     ) 
-    # count the number of parameters to optimize during training
-    n_trainable_params = sum((p.numel() for p in model.parameters() if p.requires_grad))
-    print("#Trainable Parameters: %i" % n_trainable_params)
 
     # check which training regime to use
     training_regime = {
@@ -219,7 +228,7 @@ if __name__ == '__main__':
     }[params['trainer']['regime']]
     
     # train model
-    metrics = training_regime(
+    all_metrics = training_regime(
         tree=tree,
         model=model, 
         train_data=train_data, 
@@ -231,15 +240,66 @@ if __name__ == '__main__':
     # save model to disk
     torch.save(model.state_dict(), os.path.join(args.output_dir, "model.bin"))
     
-    final_metrics = metrics[-1].final_metrics()
+    final_metrics = all_metrics[-1].final_metrics()
     # for levelwise training regime add metrics of intermediate levels
-    for layer, m in enumerate(metrics[:-1]):
+    for layer, m in enumerate(all_metrics[:-1]):
         final_metrics["layer-%i" % layer] = m.final_metrics()
         
     # save final metrics
     with open(os.path.join(args.output_dir, "metrics.json"), "w+") as f:
         f.write(json.dumps(final_metrics))
 
-    # save metrics as csv
-    metrics[-1].to_csv(os.path.join(args.output_dir, "metrics.csv"))
-    
+    # plot metrics
+    metrics = all_metrics[-1]
+    fig, (ax_loss, ax_dcg, ax_p, ax_c, ax_h) = plt.subplots(5, 1, figsize=(12, 20), sharex=True)
+    # plot losses
+    ax_loss.plot(metrics.steps, metrics.validation_loss, label="validation")
+    ax_loss.set(
+        title="Train and Test Loss",
+        ylabel="Loss"
+    )
+    ax_loss.legend()
+    ax_loss.grid()
+    # plot ndcg
+    ax_dcg.plot(metrics.steps, metrics['nDCG@1'], label="$k=1$")
+    ax_dcg.plot(metrics.steps, metrics['nDCG@3'], label="$k=3$")
+    ax_dcg.plot(metrics.steps, metrics['nDCG@5'], label="$k=5$")
+    ax_dcg.set(
+        title="nDCG @ k",
+        ylabel="nDCG"
+    )
+    ax_dcg.legend()
+    ax_dcg.grid()
+    # plot precision
+    ax_p.plot(metrics.steps, metrics['P@1'], label="$k=1$")
+    ax_p.plot(metrics.steps, metrics['P@3'], label="$k=3$")
+    ax_p.plot(metrics.steps, metrics['P@5'], label="$k=5$")
+    ax_p.set(
+        title="Precision @ k",
+        ylabel="Precision"
+    )
+    ax_p.legend()
+    ax_p.grid()
+    # plot coverage
+    ax_c.plot(metrics.steps, metrics['C@1'], label="$k=1$")
+    ax_c.plot(metrics.steps, metrics['C@3'], label="$k=3$")
+    ax_c.plot(metrics.steps, metrics['C@5'], label="$k=5$")
+    ax_c.set(
+        title="Coverage @ k",
+        ylabel="Coverage"
+    )
+    ax_c.legend()
+    ax_c.grid()
+    # plot precision
+    ax_h.plot(metrics.steps, metrics['H@1'], label="$k=1$")
+    ax_h.plot(metrics.steps, metrics['H@3'], label="$k=3$")
+    ax_h.plot(metrics.steps, metrics['H@5'], label="$k=5$")
+    ax_h.set(
+        title="Hits @ k",
+        ylabel="Hits",
+        xlabel="Global Steps"
+    )
+    ax_h.legend()
+    ax_h.grid()
+    # save and show
+    fig.savefig(os.path.join(args.output_dir, "metrics.pdf"))

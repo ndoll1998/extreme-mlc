@@ -1,53 +1,22 @@
 import os
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from torch import Tensor
-from torch.optim import Optimizer, Adam
-from torch.utils.data import Dataset, DataLoader
+import pytorch_lightning as pl
 from treelib import Tree
-from .metrics import MetricsTracker
-from .dataset import MultiLabelDataset, GroupWeights, GroupWeightedMultiLabelDataset
-from .plt import ProbabilisticLabelTree
-from .tree_utils import propagate_labels_to_level, convert_labels_to_ids
+from torch.utils.data import Dataset, DataLoader
 from dataclasses import dataclass
-from tqdm.auto import tqdm
-from typing import List, Tuple, Set, Dict, Callable
-
-@dataclass
-class TrainingArgs(object):
-    """ Helper class storing all kids of arguments that specify the training 
-        regime
-    """
-
-    # saving
-    save_dir:str
-    save_interval:int
-    # evaluation
-    eval_interval:int
-    # batch sizes
-    train_batch_size:int
-    eval_batch_size:int =None
-    # which torch device to use
-    device:torch.device =None
-    # training loop
-    num_epochs:int =None
-    num_steps:int =None
-    # optimization
-    learning_rate:float =1e-3
-    max_grad_norm:float =None
- 
-    def __post_init__(self):
-
-        # get the device to use
-        default_device = 'cuda' if torch.cuda.is_available else 'cpu'
-        self.device = self.device if self.device is not None else default_device
-        # use same batch size for evaluation if not explicitely specified
-        self.eval_batch_size = self.eval_batch_size if self.eval_batch_size is not None else self.train_batch_size
-        # make sure either `num_steps` or `num_epochs` is set but not both or none
-        assert (self.num_steps is None) or (self.num_epochs is None)
-        assert (self.num_steps is not None) or (self.num_epochs is not None)
-
+from typing import List, Set
+from .metrics import MetricsTracker
+from .plt import ProbabilisticLabelTree
+from .tree_utils import (
+    propagate_labels_to_level,
+    convert_labels_to_ids
+)
+from .dataset import (
+    MultiLabelDataset, 
+    GroupWeights,
+    GroupWeightedMultiLabelDataset
+)
 
 @dataclass(frozen=True)
 class InputsAndLabels(object):
@@ -60,116 +29,7 @@ class InputsAndLabels(object):
         n, m = len(self.inputs), len(self.labels)
         assert n == m, "Inputs (%i) and Labels (%i) do not align!" % (n, m)
 
-class __Trainer(object):
-    """ Abstract Trainer class defining the very basic training loop """
-
-    def __init__(self,
-        args:TrainingArgs,
-        model:nn.Module,
-        optim:Optimizer,
-        train_dataset:Dataset,
-        eval_dataset:Dataset,
-        metrics:MetricsTracker
-    ) -> None:
-        # save training arguments
-        self.args = args
-        # save model and optimizer
-        self.model = model.to(args.device)
-        self.optim = optim
-        # build train and test datalaoders
-        self.train_loader = DataLoader(train_dataset, batch_size=args.train_batch_size, shuffle=True)
-        self.eval_loader = DataLoader(eval_dataset, batch_size=args.eval_batch_size, shuffle=False)
-        # save metrics tracker
-        self.metrics = metrics
-
-    def loss(self, model:nn.Module, inputs:Dict[str, Tensor]) -> Tensor:
-        """ Compute the loss for the given input """
-        raise NotImplementedError()
-
-    def predict(self, model:nn.Module, inputs:Dict[str, Tensor]) -> Tuple[Tensor]:
-        """ Do a model prediction step and return the 3-tuple (loss, predictions, targets) """
-        raise NotImplementedError()
-
-    def train(self):
-        """ Run the train loop """    
-        
-        self.model.train()
-        global_step = 0
-        running_loss = 0
-        # compute the total number of training steps
-        total_steps = self.args.num_steps if self.args.num_steps is not None else \
-            (self.args.num_epochs * len(self.train_loader))
-
-        # training loop
-        with tqdm(total=total_steps, desc="Training") as pbar:
-
-            while (global_step < total_steps):
-
-                # start new training epoch
-                for inputs in self.train_loader:
-                    # compute loss
-                    global_step += 1
-                    loss = self.loss(self.model, inputs)
-                    # optimize
-                    self.optim.zero_grad()
-                    loss.backward()
-                    self.optim.step()
-                    # update running loss
-                    running_loss += loss.item()
-
-                    # evaluate the model
-                    if (global_step % self.args.eval_interval == 0):
-                        self.model.eval()
-                        eval_running_loss = 0
-                        predictions, targets = [], []
-                        
-                        with torch.no_grad():
-                            # evaluation loop
-                            for inputs in tqdm(self.eval_loader, desc="Evaluating", leave=False):
-                                # do prediction step and store returns
-                                loss, preds, positives = self.predict(self.model, inputs)
-                                eval_running_loss += loss.item()
-                                predictions.append(preds.cpu())
-                                targets.append(positives.cpu())
-
-                            # concatenate all predictions and targets
-                            preds = torch.cat(predictions, dim=0)
-                            targets = torch.cat(targets, dim=0)
-                            # compute metrics
-                            metrics_log = self.metrics(
-                                step=global_step, 
-                                train_loss=running_loss/self.args.eval_interval,
-                                eval_loss=eval_running_loss/len(self.eval_loader),
-                                predictions=preds, 
-                                targets=targets
-                            )
-                            metrics_log = {
-                                key: round(value, 5 if 'loss' in key else 3)
-                                for key, value in metrics_log.items()
-                            }
-                            print("Step %i:" % global_step, metrics_log)
-
-                            # reset running loss
-                            running_loss = 0
-
-                        # back to training
-                        self.model.train()
-
-                    if (global_step % self.args.save_interval == 0):
-                        # save model and optimizer
-                        os.makedirs(self.args.save_dir, exist_ok=True)
-                        torch.save(self.optim.state_dict(), os.path.join(self.args.save_dir, "optimizer.bin"))
-                        torch.save(self.model.state_dict(), os.path.join(self.args.save_dir, "model.bin"))
-
-                    # update progress bar
-                    pbar.update(1)
-                    
-                    # training done
-                    if (global_step == total_steps):
-                        break
-
-
-class EndToEndTrainer(__Trainer):
+class End2EndTrainerModule(pl.LightningModule):
     """ End-to-End Trainer for probabilistic label tree
         Trains all levels of the tree simultaneously
     """
@@ -178,128 +38,209 @@ class EndToEndTrainer(__Trainer):
         tree:Tree,
         model:ProbabilisticLabelTree,
         train_data:InputsAndLabels,
-        eval_data:InputsAndLabels,
+        test_data:InputsAndLabels,
         num_candidates:int,
-        metrics:MetricsTracker,
-        args:TrainingArgs,
-        topk:int
-    ):
-        # save arguments as they are needed in create_optimizer
-        self.args = args
+        topk:int,
+        train_batch_size:int,
+        test_batch_size:int,
+        metrics:MetricsTracker
+    ) -> None:
+        # initialize lightning module
+        super().__init__()
+        # save arguments
+        self.tree = tree
+        self.metrics = metrics
         self.k = topk
-        # build a list of all labels organized in the label tree
-        label_pool = set(n.data.level_index for n in tree.leaves()) 
-        # convert the labels to ids
-        train_labels = convert_labels_to_ids(tree, train_data.labels)
-        eval_labels = convert_labels_to_ids(tree, eval_data.labels)
-
+        # batch sizes
+        self.train_batch_size = train_batch_size
+        self.test_batch_size = test_batch_size
+        # save model
+        self.model = model
+        
         # create datasets
-        train_dataset = MultiLabelDataset(
+        self.train_dataset = MultiLabelDataset(
             input_dataset=train_data.inputs,
             labels=train_labels,
             label_pool=label_pool,
             num_candidates=num_candidates
         )        
-        eval_dataset = MultiLabelDataset(
-            input_dataset=eval_data.inputs,
-            labels=eval_labels,
+        self.test_dataset = MultiLabelDataset(
+            input_dataset=test_data.inputs,
+            labels=test_labels,
             label_pool=label_pool,
             num_candidates=num_candidates
         )
 
-        # initialize trainer
-        super(EndToEndTrainer, self).__init__(
-            args=args,
-            model=model,
-            optim=self.create_optimizer(model),
-            train_dataset=train_dataset,
-            eval_dataset=eval_dataset,
-            metrics=metrics
-        )
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.model.parameters(), lr=1e-3)
 
+    def train_dataloader(self) -> DataLoader:
+        # build the train dataloader
+        return DataLoader(self.train_dataset, batch_size=self.train_batch_size, shuffle=True, num_workers=4)
 
-    def create_optimizer(self, model:nn.Module) -> Optimizer:
-        return Adam(model.parameters(), lr=self.args.learning_rate)
-    
-    def loss(self, model, inputs):
-        # move inputs to device and pop labels from inputs
-        inputs = {name: tensor.to(self.args.device) for name, tensor in inputs.items()}
-        labels = inputs.pop('labels')
-        # predict and compute loss
-        out = model(**inputs)
-        return F.binary_cross_entropy(out.probs[out.mask], labels[out.mask])
+    def val_dataloader(self) -> DataLoader:
+        # build the validation dataloader
+        return DataLoader(self.test_dataset, batch_size=self.test_batch_size, shuffle=False, num_workers=4)
 
-    @torch.no_grad()
-    def predict(self, model, inputs):
-        # move all inputs to device
-        inputs = {n: t.to(self.args.device) for n, t in inputs.items()}
-        # predict and compute loss
-        labels = inputs.pop("labels")
-        out = model.forward(**inputs)
+    def training_step(self, batch, batch_idx):
+        # pop labels from batch and predict
+        labels = batch.pop('labels')
+        out = self.model(**batch)
+        # compute loss and log it
         loss = F.binary_cross_entropy(out.probs[out.mask], labels[out.mask])
+        self.log("train_loss", loss, on_step=True, prog_bar=False, logger=True)
+        # return loss
+        return loss
 
-        # get all positives
-        # TODO: this assumes that all positive labels are
-        #       contained in the candidates which is not 
-        #       neccessarily true
-        candidates = inputs.pop("candidates")
-        positives = torch.masked_fill(candidates, labels==0, -1)
-        # predict using topk and track metrics
-        out = model.forward(**inputs, topk=self.k)
-        preds = out.topk(k=100).candidates
-        # return
-        return (loss, preds, positives)
+    @torch.no_grad() 
+    def validation_step(self, batch, batch_idx):
+        # compute test loss
+        # pop labels from batch and predict
+        labels = batch.pop('labels')
+        out = self.model(**batch)
+        # compute loss
+        loss = F.binary_cross_entropy(out.probs[out.mask], labels[out.mask])
+        
+        # compute test metrics
+        candidates = batch.pop("candidates")
+        positives = torch.masked_fill(candidates, labels == 0, -1)
+        # predict using all previous layers
+        # note that this is no longer candidate based but
+        # instead the model chooses the paths to follow during prediction
+        self.model.eval()
+        output = self.model(**batch, topk=self.k)
+        preds = output.topk(k=100).candidates
+        # return loss, predictions and labels
+        return {
+            'loss': loss, 
+            'preds': preds.cpu(), 
+            'targets': positives.cpu()
+        }
+
+    def validation_epoch_end(self, outputs):
+        # compute average loss
+        avg_loss = sum((out['loss'] for out in outputs)) / len(outputs)    
+        self.log("val_loss", avg_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        # concatenate predictions and targets
+        preds = torch.cat(tuple(out['preds'] for out in outputs), dim=0)
+        targets = torch.cat(tuple(out['targets'] for out in outputs), dim=0)
+        # compute metrics
+        log_metrics, add_metrics = self.metrics(
+            step=self.trainer.global_step,
+            loss=avg_loss.item(),
+            predictions=preds,
+            targets=targets
+        )
+        # log metrics
+        self.log_dict(log_metrics, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.log_dict(add_metrics, on_step=False, on_epoch=True, prog_bar=False, logger=True)
+        return avg_loss
 
 
-class LevelTrainer(__Trainer):
+class LevelTrainerModule(pl.LightningModule):
     """ Trainer class to train a single level of a probabilistic label tree
         Note that the trainer assumes that all previous levels of the PLT are
         already trained
     """
-    
+
     def __init__(self,
         level:int,
         tree:Tree,
         model:ProbabilisticLabelTree,
         train_data:InputsAndLabels,
-        eval_data:InputsAndLabels,
+        test_data:InputsAndLabels,
         num_candidates:int,
-        metrics:MetricsTracker,
-        args:TrainingArgs,
-        topk:int
+        topk:int,
+        train_batch_size:int,
+        test_batch_size:int,
+        metrics:MetricsTracker
     ) -> None:
-        # save arguments as they are needed in build_dataset
-        self.args = args
-        # save tree and level to train
-        self.tree = tree
+        # initialize lightning module
+        super().__init__()
+        # save arguments
         self.level = level
-        # save candidate information
+        self.tree = tree
+        self.metrics = metrics
         self.num_candidates = num_candidates
-        self.k = topk # used in evaluation
+        self.k = topk
+        # batch sizes
+        self.train_batch_size = train_batch_size
+        self.test_batch_size = test_batch_size
+        # save model and get classifier for specified level
+        self.model = model
+        self.classifier = model.get_classifier(level=level)
+        # save data
+        self.train_data = train_data
+        self.test_data = test_data
+
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.classifier.parameters(), lr=1e-3)
+
+    def train_dataloader(self) -> DataLoader:
+        # build the dataset and the dataloader from it
+        dataset = self.build_dataset(self.train_data)
+        return DataLoader(dataset, batch_size=self.train_batch_size, shuffle=True, num_workers=4)
+
+    def val_dataloader(self) -> DataLoader:
+        # build the dataset and the dataloader from it
+        dataset = self.build_dataset(self.test_data)
+        return DataLoader(dataset, batch_size=self.test_batch_size, shuffle=False, num_workers=4)
+
+    def training_step(self, batch, batch_idx):
+        # pop labels from batch and predict
+        labels = batch.pop('labels')
+        logits = self.classifier(**batch)
+        # compute loss and log it
+        loss = F.binary_cross_entropy_with_logits(logits, labels)
+        self.log("train_loss", loss, on_step=True, prog_bar=False, logger=True)
+        # return loss
+        return loss
+
+    @torch.no_grad() 
+    def validation_step(self, batch, batch_idx):
+        # compute test loss
+        # pop labels from batch and predict
+        labels = batch.pop('labels')
+        logits = self.classifier(**batch)
+        # compute loss
+        loss = F.binary_cross_entropy_with_logits(logits, labels)
         
-        # move the plt to the device and get the classifier to train
-        self.plt = model.to(args.device)
-        cls = self.plt.get_classifier(level=level)
-        # create the optimizer
-        optim = self.create_optimizer(cls)
+        # compute test metrics
+        candidates = batch.pop("candidates")
+        positives = torch.masked_fill(candidates, labels == 0, -1)
+        # predict using all previous layers
+        # note that this is no longer candidate based but
+        # instead the model chooses the paths to follow during prediction
+        self.model.eval()
+        output = self.model(**batch, topk=self.k, restrict_depth=self.level+1)
+        preds = output.topk(k=100).candidates
+        # return loss, predictions and labels
+        return {
+            'loss': loss, 
+            'preds': preds.cpu(), 
+            'targets': positives.cpu()
+        }
 
-        # initialize trainer
-        super(LevelTrainer, self).__init__(
-            args=args,
-            # model and optimizer
-            model=cls,
-            optim=optim,
-            # build training and evaluation dataset
-            train_dataset=self.build_dataset(train_data),
-            eval_dataset=self.build_dataset(eval_data),
-            # metrics
-            metrics=metrics
+    def validation_epoch_end(self, outputs):
+        # compute average loss
+        avg_loss = sum((out['loss'] for out in outputs)) / len(outputs)    
+        self.log("val_loss", avg_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        # concatenate predictions and targets
+        preds = torch.cat(tuple(out['preds'] for out in outputs), dim=0)
+        targets = torch.cat(tuple(out['targets'] for out in outputs), dim=0)
+        # compute metrics
+        log_metrics, add_metrics = self.metrics(
+            step=self.trainer.global_step,
+            loss=avg_loss.item(),
+            predictions=preds,
+            targets=targets
         )
+        # log metrics
+        self.log_dict(log_metrics, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.log_dict(add_metrics, on_step=False, on_epoch=True, prog_bar=False, logger=True)
+        return avg_loss
 
-    def create_optimizer(self, model:nn.Module) -> Optimizer:
-        return Adam(model.parameters(), lr=self.args.learning_rate)
-
-    def build_dataset(self, data:InputsAndLabels):
+    def build_dataset(self, data:InputsAndLabels) -> MultiLabelDataset:
         
         input_dataset, labels = data.inputs, data.labels
         # build a list of all labels in the current level
@@ -322,16 +263,16 @@ class LevelTrainer(__Trainer):
         else:
             # create dataloader for train input dataset
             # note that the test-dataloader does not shuffle the dataset
-            loader = DataLoader(input_dataset, batch_size=self.args.eval_batch_size, shuffle=False)
+            loader = DataLoader(input_dataset, batch_size=self.test_batch_size, shuffle=False)
             # get model predictions
-            self.plt.eval()
+            self.model.eval()
             outputs = []
             # move model to device
             with torch.no_grad():
                 for inputs in tqdm(loader, "Building Group Weights"):
                     # apply model and collect all outputs
-                    inputs = {key: tensor.to(self.args.device) for key, tensor in inputs.items()}
-                    model_out = self.plt(**inputs, topk=self.k, restrict_depth=self.level+1)
+                    inputs = {key: tensor.to(self.device) for key, tensor in inputs.items()}
+                    model_out = self.model(**inputs, topk=self.k, restrict_depth=self.level+1)
                     outputs.append(model_out.topk(k=self.k).cpu())
             # concatenate all model outputs to build group weights
             weights = GroupWeights(
@@ -360,36 +301,3 @@ class LevelTrainer(__Trainer):
                 groups=groups,
                 group_weights=weights
             )
-            
-    def loss(self, classifier, inputs):
-        # move inputs to device and pop labels from inputs
-        inputs = {name: tensor.to(self.args.device) for name, tensor in inputs.items()}
-        labels = inputs.pop('labels')
-        # predict and compute loss
-        logits = classifier(**inputs)
-        return F.binary_cross_entropy_with_logits(logits, labels)
-
-    @torch.no_grad()
-    def predict(self, classifier, inputs):
-        # pop labels from inputs
-        labels = inputs.pop('labels').to(self.args.device)
-        # move inputs to device
-        inputs = {name: tensor.to(self.args.device) for name, tensor in inputs.items()}
-        # predict and compute loss
-        # note that this is still candidate based
-        logits = classifier(**inputs)
-        loss = F.binary_cross_entropy_with_logits(logits, labels)
-        # get all positives
-        # TODO: this assumes that all positive labels are
-        #       contained in the candidates which is not 
-        #       neccessarily true
-        candidates = inputs.pop("candidates")
-        positives = torch.masked_fill(candidates, labels == 0, -1)
-        # predict using all previous layers
-        # note that this is no longer candidate based but
-        # instead the model chooses the paths to follow during prediction
-        self.plt.eval()
-        output = self.plt(**inputs, topk=self.k, restrict_depth=self.level+1)
-        preds = output.topk(k=100).candidates
-        # return loss, predictions and labels
-        return (loss, preds, positives)

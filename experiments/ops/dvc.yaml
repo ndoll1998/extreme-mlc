@@ -3,8 +3,10 @@ vars:
     - code-type: "ops_codes"
     - data:
         output-dir: "data"
-        train-source: "/data/share/gsg_consulting/ehahn/preprocessing_pipeline/data/ops/all_hospitals_filtered_ops.csv"
-        test-source: "/data/share/gsg_consulting/ehahn/preprocessing_pipeline/data/ops/all_hospitals_filtered_ops_check.csv"
+        # train-source: "/data/share/gsg_consulting/ehahn/preprocessing_pipeline/data/ops/all_hospitals_filtered_ops.csv"
+        # test-source: "/data/share/gsg_consulting/ehahn/preprocessing_pipeline/data/ops/all_hospitals_filtered_ops_check.csv"
+        train-source: "/data/share/gsg_consulting/AttentionXML/old_data/ops-combined/train.csv"
+        test-source: "/data/share/gsg_consulting/AttentionXML/old_data/ops-combined/test.csv"
     - model:
         output-dir: "model"
 
@@ -99,7 +101,6 @@ stages:
             - model.mlp.activation
             - model.mlp.hidden_layers
             - trainer.regime
-            - trainer.save_interval
             - trainer.eval_interval
             - trainer.train_batch_size
             - trainer.eval_batch_size
@@ -108,9 +109,6 @@ stages:
             - trainer.topk
         metrics:
             - ${model.output-dir}/metrics.json:
-                cache: false
-        plots:
-            - ${model.output-dir}/metrics.csv:
                 cache: false
         outs:
             - ${model.output-dir}/model.bin

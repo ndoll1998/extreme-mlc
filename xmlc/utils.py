@@ -4,7 +4,8 @@ from typing import Dict, Tuple, Set
 def build_sparse_tensor(
     args:torch.LongTensor,
     mask:torch.BoolTensor,
-    size:Tuple[int]
+    size:Tuple[int],
+    values:torch.Tensor =None
 ) -> torch.Tensor:
     # make sure sizes align
     assert size[0] == args.size(0)
@@ -13,7 +14,7 @@ def build_sparse_tensor(
     idx = torch.arange(size[0]).unsqueeze(1).repeat(1, args.size(1))
     return torch.sparse_coo_tensor(
         indices=torch.stack((idx[mask], args[mask]), dim=0),
-        values=[1] * mask.sum(),
+        values=([1] * mask.sum()) if values is None else values[mask],
         size=size
     )
 
