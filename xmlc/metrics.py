@@ -114,9 +114,14 @@ def ndcg(
     x = sparse_scaled_y * sparse_targets
     if x._nnz() == 0:
         return 0.0
-    # compute dcg and normalize it
+    # compute dcg
     dcg = torch.sparse.sum(x, dim=-1).to_dense()
-    ndcg = dcg / torch.sparse.sum(sparse_scaled_y, dim=-1).to_dense()
+    # compute normalization factor
+    idx = torch.arange(k).unsqueeze(0).repeat(preds.size(0), 1)
+    yn = torch.sparse.sum(sparse_targets, dim=-1).to_dense()
+    target_inv_logs = torch.where(idx < yn.unsqueeze(1), inv_logs, torch.zeros_like(inv_logs))
+    # normalize the gains
+    ndcg = dcg / target_inv_logs.sum(dim=-1)
     # return average normalized gains
     return ndcg.mean().item()
 
