@@ -38,11 +38,11 @@ class End2EndTrainerModule(pl.LightningModule):
         tree:Tree,
         model:ProbabilisticLabelTree,
         train_data:InputsAndLabels,
-        test_data:InputsAndLabels,
+        val_data:InputsAndLabels,
         num_candidates:int,
         topk:int,
         train_batch_size:int,
-        test_batch_size:int,
+        val_batch_size:int,
         metrics:MetricsTracker
     ) -> None:
         # initialize lightning module
@@ -53,20 +53,20 @@ class End2EndTrainerModule(pl.LightningModule):
         self.k = topk
         # batch sizes
         self.train_batch_size = train_batch_size
-        self.test_batch_size = test_batch_size
+        self.val_batch_size = val_batch_size
         # save model
         self.model = model
         
         # create datasets
         self.train_dataset = MultiLabelDataset(
             input_dataset=train_data.inputs,
-            labels=train_labels,
+            labels=train_data.labels,
             label_pool=label_pool,
             num_candidates=num_candidates
         )        
-        self.test_dataset = MultiLabelDataset(
-            input_dataset=test_data.inputs,
-            labels=test_labels,
+        self.val_dataset = MultiLabelDataset(
+            input_dataset=val_data.inputs,
+            labels=val_data.labels,
             label_pool=label_pool,
             num_candidates=num_candidates
         )
@@ -80,7 +80,7 @@ class End2EndTrainerModule(pl.LightningModule):
 
     def val_dataloader(self) -> DataLoader:
         # build the validation dataloader
-        return DataLoader(self.test_dataset, batch_size=self.test_batch_size, shuffle=False, num_workers=4)
+        return DataLoader(self.val_dataset, batch_size=self.val_batch_size, shuffle=False, num_workers=4)
 
     def training_step(self, batch, batch_idx):
         # pop labels from batch and predict
@@ -94,14 +94,14 @@ class End2EndTrainerModule(pl.LightningModule):
 
     @torch.no_grad() 
     def validation_step(self, batch, batch_idx):
-        # compute test loss
+        # compute validation loss
         # pop labels from batch and predict
         labels = batch.pop('labels')
         out = self.model(**batch)
         # compute loss
         loss = F.binary_cross_entropy(out.probs[out.mask], labels[out.mask])
         
-        # compute test metrics
+        # compute validation metrics
         candidates = batch.pop("candidates")
         positives = torch.masked_fill(candidates, labels == 0, -1)
         # predict using all previous layers
@@ -148,11 +148,11 @@ class LevelTrainerModule(pl.LightningModule):
         tree:Tree,
         model:ProbabilisticLabelTree,
         train_data:InputsAndLabels,
-        test_data:InputsAndLabels,
+        val_data:InputsAndLabels,
         num_candidates:int,
         topk:int,
         train_batch_size:int,
-        test_batch_size:int,
+        val_batch_size:int,
         metrics:MetricsTracker
     ) -> None:
         # initialize lightning module
@@ -165,13 +165,13 @@ class LevelTrainerModule(pl.LightningModule):
         self.k = topk
         # batch sizes
         self.train_batch_size = train_batch_size
-        self.test_batch_size = test_batch_size
+        self.val_batch_size = val_batch_size
         # save model and get classifier for specified level
         self.model = model
         self.classifier = model.get_classifier(level=level)
         # save data
         self.train_data = train_data
-        self.test_data = test_data
+        self.val_data = val_data
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.classifier.parameters(), lr=1e-3)
@@ -183,8 +183,8 @@ class LevelTrainerModule(pl.LightningModule):
 
     def val_dataloader(self) -> DataLoader:
         # build the dataset and the dataloader from it
-        dataset = self.build_dataset(self.test_data)
-        return DataLoader(dataset, batch_size=self.test_batch_size, shuffle=False, num_workers=4)
+        dataset = self.build_dataset(self.val_data)
+        return DataLoader(dataset, batch_size=self.val_batch_size, shuffle=False, num_workers=4)
 
     def training_step(self, batch, batch_idx):
         # pop labels from batch and predict
@@ -198,14 +198,14 @@ class LevelTrainerModule(pl.LightningModule):
 
     @torch.no_grad() 
     def validation_step(self, batch, batch_idx):
-        # compute test loss
+        # compute validation loss
         # pop labels from batch and predict
         labels = batch.pop('labels')
         logits = self.classifier(**batch)
         # compute loss
         loss = F.binary_cross_entropy_with_logits(logits, labels)
         
-        # compute test metrics
+        # compute validation metrics
         candidates = batch.pop("candidates")
         positives = torch.masked_fill(candidates, labels == 0, -1)
         # predict using all previous layers
@@ -262,8 +262,8 @@ class LevelTrainerModule(pl.LightningModule):
             )
         else:
             # create dataloader for train input dataset
-            # note that the test-dataloader does not shuffle the dataset
-            loader = DataLoader(input_dataset, batch_size=self.test_batch_size, shuffle=False)
+            # note that the validation-dataloader does not shuffle the dataset
+            loader = DataLoader(input_dataset, batch_size=self.val_batch_size, shuffle=False)
             # get model predictions
             self.model.eval()
             outputs = []

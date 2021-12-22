@@ -83,17 +83,14 @@ class LSTMClassifierFactory(object):
 
 
 def load_data(
-    input_ids_path:str, 
-    labels_path:str, 
+    data_path:str, 
     padding_idx:int
 ) -> Tuple[InputsAndLabels, InputsAndLabels]:
 
     # load input ids and compute mask
-    input_ids = torch.load(input_ids_path)
+    data = torch.load(data_path)
+    input_ids, labels = data['input-ids'], data['labels']
     input_mask = (input_ids != padding_idx)
-    # load labels
-    with open(labels_path, "r") as f:
-        labels = [l.strip().split() for l in f.readlines()]
     # build data
     return InputsAndLabels(
         inputs=NamedTensorDataset(input_ids=input_ids, input_mask=input_mask),
@@ -103,7 +100,7 @@ def load_data(
 def train_end2end(
     model:ProbabilisticLabelTree, 
     train_data:InputsAndLabels, 
-    test_data:InputsAndLabels,
+    val_data:InputsAndLabels,
     params:Dict[str, Any]
 ):
     raise NotImplementedError()
@@ -113,7 +110,7 @@ def train_levelwise(
     tree:Tree,
     model:ProbabilisticLabelTree, 
     train_data:InputsAndLabels, 
-    test_data:InputsAndLabels,
+    val_data:InputsAndLabels,
     params:Dict[str, Any],
     output_dir:str
 ) -> List[MetricsTracker]:
@@ -138,11 +135,11 @@ def train_levelwise(
             tree=tree,
             model=model,
             train_data=train_data,
-            test_data=test_data,
+            val_data=val_data,
             num_candidates=params['num_candidates'],
             topk=params['topk'],
             train_batch_size=params['train_batch_size'],
-            test_batch_size=params['eval_batch_size'],
+            val_batch_size=params['eval_batch_size'],
             metrics=metrics
         )
         # create the trainer
@@ -156,8 +153,8 @@ def train_levelwise(
             enable_checkpointing=False,
             callbacks=[
                 pl.callbacks.early_stopping.EarlyStopping(
-                    monitor="val_loss",
-                    patience=5,
+                    monitor="nDCG@3",
+                    patience=50,
                     verbose=False
                 )
             ]
@@ -176,10 +173,8 @@ if __name__ == '__main__':
     from argparse import ArgumentParser
     # build argument parser
     parser = ArgumentParser("Train a model on the preprocessed data.")
-    parser.add_argument("--train-input-ids", type=str, help="Path to the preprocessed train input ids.")
-    parser.add_argument("--test-input-ids", type=str, help="Path to the preprocessed test input ids.")
-    parser.add_argument("--train-labels", type=str, help="Path to the file holding the train labels.")
-    parser.add_argument("--test-labels", type=str, help="Path to the file holding the test labels.")
+    parser.add_argument("--train-data", type=str, help="Path to the preprocessed train data.")
+    parser.add_argument("--val-data", type=str, help="Path to the preprocessed validation data.")
     parser.add_argument("--vocab", type=str, help="Path to the vocab file.")
     parser.add_argument("--embed", type=str, help="Path to the initial (pretrained) embedding vector file.")
     parser.add_argument("--label-tree", type=str, help="Path to the label tree file.")
@@ -207,9 +202,9 @@ if __name__ == '__main__':
         emb_init=emb_init
     )
 
-    # load train and test data
-    train_data = load_data(input_ids_path=args.train_input_ids, labels_path=args.train_labels, padding_idx=padding_idx)
-    test_data = load_data(input_ids_path=args.test_input_ids, labels_path=args.test_labels, padding_idx=padding_idx)
+    # load train and validation data
+    train_data = load_data(data_path=args.train_data, padding_idx=padding_idx)
+    val_data = load_data(data_path=args.val_data, padding_idx=padding_idx)
 
     # load label tree
     with open(args.label_tree, "rb") as f:
@@ -232,7 +227,7 @@ if __name__ == '__main__':
         tree=tree,
         model=model, 
         train_data=train_data, 
-        test_data=test_data, 
+        val_data=val_data, 
         params=params['trainer'],
         output_dir=args.output_dir
     )

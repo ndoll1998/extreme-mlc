@@ -101,7 +101,11 @@ if __name__ == '__main__':
     # build argument parser
     parser = ArgumentParser(description="Preprocess the texts and build the vocabulary.")
     parser.add_argument("--train-texts", type=str, help="Path to the prepared train texts file.")
+    parser.add_argument("--train-labels", type=str, help="Path to the training labels file.")
+    parser.add_argument("--val-texts", type=str, help="Path to the prepared validation texts file.")
+    parser.add_argument("--val-labels", type=str, help="Path to the validation labels file.")
     parser.add_argument("--test-texts", type=str, help="Path to the prepared test texts file.")
+    parser.add_argument("--test-labels", type=str, help="Path to the test labels file.")
     parser.add_argument("--tokenizer", type=str, choices=["Spacy", "NLTK"], help="Specify the tokenizer to use.")
     parser.add_argument("--max-length", type=int, help="The maximum allowed number of tokens per input text.")
     parser.add_argument("--pretrained-vocab", type=str, help="Path to the pretrained vocab.")
@@ -138,6 +142,14 @@ if __name__ == '__main__':
     # build train input features
     train_input_ids = torch.LongTensor(convert_tokens_to_ids(filtered_vocab, train_tokenized))
     
+    # load val texts
+    with open(args.val_texts, "r") as f:
+        val_texts = f.readlines()
+    # build test input features
+    val_tokenized = tokenize(tokenizer, val_texts)
+    val_tokenized = truncate_pad(val_tokenized, max_length=args.max_length)
+    val_input_ids = torch.LongTensor(convert_tokens_to_ids(filtered_vocab, val_tokenized))
+   
     # load test texts
     with open(args.test_texts, "r") as f:
         test_texts = f.readlines()
@@ -149,16 +161,14 @@ if __name__ == '__main__':
     # compute ratio of unkown tokens in texts
     unk_token_id = filtered_vocab["[UNK]".lower()]
     n_train_unk = (train_input_ids == unk_token_id).sum()
+    n_val_unk = (val_input_ids == unk_token_id).sum()
     n_test_unk = (test_input_ids == unk_token_id).sum()
     # build metrics dict
     metrics = {
         "vocab_size": len(filtered_vocab),
-        "train": {
-            "unk_tokens_ratio": n_train_unk.item() / train_input_ids.numel()
-        },
-        "test": {
-            "unk_tokens_ratio": n_test_unk.item() / test_input_ids.numel()
-        }
+        "train":      {"unk_tokens_ratio": n_train_unk.item() / train_input_ids.numel()},
+        "validation": {"unk_tokens_ratio": n_val_unk.item() / val_input_ids.numel()},
+        "test":       {"unk_tokens_ratio": n_test_unk.item() / test_input_ids.numel()}
     }
 
     # create the output directory
@@ -171,8 +181,24 @@ if __name__ == '__main__':
     with open(os.path.join(args.output_dir, "vocab.json"), "w+") as f:
         f.write(json.dumps(filtered_vocab))
     np.save(os.path.join(args.output_dir, "vectors.npy"), filtered_embed)
-    # save train and test input ids to disk
-    torch.save(train_input_ids, os.path.join(args.output_dir, "train_input_ids.pkl"))
-    torch.save(test_input_ids, os.path.join(args.output_dir, "test_input_ids.pkl"))
 
+    # save train and test input ids to disk
+    with open(args.train_labels, "r") as f:
+        torch.save({
+                'input-ids': train_input_ids,
+                'labels': [labels.strip().split() for labels in f.readlines()] 
+            }, os.path.join(args.output_dir, "train_data.pkl")
+        )
+    with open(args.val_labels, "r") as f:
+        torch.save({
+                'input-ids': val_input_ids,
+                'labels': [labels.strip().split() for labels in f.readlines()] 
+            }, os.path.join(args.output_dir, "val_data.pkl")
+        )
+    with open(args.test_labels, "r") as f:
+        torch.save({
+                'input-ids': test_input_ids,
+                'labels': [labels.strip().split() for labels in f.readlines()] 
+            }, os.path.join(args.output_dir, "test_data.pkl")
+        )
 

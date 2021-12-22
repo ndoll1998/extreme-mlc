@@ -8,7 +8,7 @@ class MetricsTracker(object):
     def __init__(self):
         # save dict holding all metrics for all evaluations
         self.metrics = {'steps': [], 'validation_loss': []}
-    
+
     def prepare(self, predictions, targets) -> Any:
         """ prepare predictions and targets for metric computations """
         return eval_preds

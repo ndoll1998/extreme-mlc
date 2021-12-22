@@ -44,7 +44,6 @@ def filter_labels(
 
     # filter labels
     all_labels = [[l for l in labels if l in filtered_labels] for labels in tqdm(all_labels, desc="Filter Labels")]
-    all_labels = [' '.join(labels) for labels in all_labels]
     
     # some basic statistics
     counts = [counter[l] for l in filtered_labels]
@@ -54,6 +53,8 @@ def filter_labels(
         'avg_labels_per_example': sum(map(len, all_labels)) / len(all_labels)
     }
     
+    # concat labels into a single string per example and return all
+    all_labels = [' '.join(labels) for labels in all_labels]
     return all_labels, filtered_labels, metrics
 
 def filter_hospitals(
@@ -118,43 +119,72 @@ def convert_csv_to_format(
 
     return selected_labels, metrics
 
-def create_data(config:dict):
+def create_data(
+
+    train_source:str,
+    val_source:str,
+    test_source:str,
+    code_type:str,    
+
+    output_dir:str,
+    
+    hospitals:list =None,
+    min_label_freq:int =-1,
+    max_num_labels:int =-1,
+    preselected_labels_file:str =None
+) -> None:
 
     # create output directory if necessary
-    os.makedirs(config['output_dir'], exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
 
     # read allowed labels if provided
     labels = None
-    if "PreselectedLabelsFile" in config:
-        with open(config['PreselectedLabelsFile'], "r") as f:
+    if preselected_labels_file is not None:
+        with open(preselected_labels_file, "r") as f:
             labels = set(f.read().strip().splitlines())
-        print("Using %i preselected labels from %s" % (len(labels), config['PreselectedLabelsFile']))
+        print("Using %i preselected labels from %s" % (len(labels), preselected_labels_file))
 
     print("Preparing Train Data...")
     # train data
     labels, train_metrics = convert_csv_to_format(
-        csv_fpath=config['train_source'],
-        code_type=config['code_type'],
-        out_texts_fpath=os.path.join(config['output_dir'], "train_texts.txt"),
-        out_labels_fpath=os.path.join(config['output_dir'], "train_labels.txt"),
-        out_info_fpath=os.path.join(config['output_dir'], "train_info.csv"),
-        min_label_freq=config.get('min_label_freq', -1),
-        max_num_labels=config.get('max_num_labels', -1),
-        valid_hospitals=config.get("hospitals", None),
+        csv_fpath=train_source,
+        code_type=code_type,
+        out_texts_fpath=os.path.join(output_dir, "train_texts.txt"),
+        out_labels_fpath=os.path.join(output_dir, "train_labels.txt"),
+        out_info_fpath=os.path.join(output_dir, "train_info.csv"),
+        min_label_freq=min_label_freq,
+        max_num_labels=max_num_labels,
+        valid_hospitals=hospitals,
         filtered_labels=labels,
         force_filtering=True
     )
     print("Done")
 
     # test data
+    print("\nPreparing Validation Data...")
+    _, val_metrics = convert_csv_to_format(
+        csv_fpath=val_source,
+        code_type=code_type,
+        out_texts_fpath=os.path.join(output_dir, "val_texts.txt"),
+        out_labels_fpath=os.path.join(output_dir, "val_labels.txt"),
+        out_info_fpath=os.path.join(output_dir, "val_info.csv"),
+        valid_hospitals=hospitals,
+        # use the same labels as for the training data
+        min_label_freq=-1,
+        max_num_labels=-1,
+        filtered_labels=labels
+    )
+    print("Done")
+
+    # test data
     print("\nPreparing Test Data...")
     _, test_metrics = convert_csv_to_format(
-        csv_fpath=config['test_source'],
-        code_type=config['code_type'],
-        out_texts_fpath=os.path.join(config['output_dir'], "test_texts.txt"),
-        out_labels_fpath=os.path.join(config['output_dir'], "test_labels.txt"),
-        out_info_fpath=os.path.join(config['output_dir'], "test_info.csv"),
-        valid_hospitals=config.get("hospitals", None),
+        csv_fpath=test_source,
+        code_type=code_type,
+        out_texts_fpath=os.path.join(output_dir, "test_texts.txt"),
+        out_labels_fpath=os.path.join(output_dir, "test_labels.txt"),
+        out_info_fpath=os.path.join(output_dir, "test_info.csv"),
+        valid_hospitals=hospitals,
         # use the same labels as for the training data
         min_label_freq=-1,
         max_num_labels=-1,
@@ -163,15 +193,15 @@ def create_data(config:dict):
     print("Done")
 
     # save labels to directory
-    with open(os.path.join(config['output_dir'], "labels.txt"), "w+") as f:
+    with open(os.path.join(output_dir, "labels.txt"), "w+") as f:
         f.write('\n'.join(labels))
     # save list of used hospitals to directory
-    with open(os.path.join(config['output_dir'], "hospitals.txt"), "w+") as f:
-        f.write('\n'.join(config['hospitals']))
+    with open(os.path.join(output_dir, "hospitals.txt"), "w+") as f:
+        f.write('\n'.join(hospitals))
 
     # write train and test metrics
-    with open(os.path.join(config['output_dir'], "metrics.json"), "w+") as f:
-        f.write(json.dumps({'train': train_metrics, 'test': test_metrics}))
+    with open(os.path.join(output_dir, "metrics.json"), "w+") as f:
+        f.write(json.dumps({'train': train_metrics, 'validation': val_metrics, 'test': test_metrics}))
 
 if __name__ == '__main__':
 
@@ -180,6 +210,7 @@ if __name__ == '__main__':
     parser = ArgumentParser(description="Prepare the raw train and test data.")
     parser.add_argument('--code-type', type=str, choices=["ops_codes", "icd_codes"])
     parser.add_argument('--train-source', type=str, help="The path to the .csv file containing the raw training data.")
+    parser.add_argument('--val-source', type=str, help="The path to the .csv file containing the raw validation data.")
     parser.add_argument('--test-source', type=str, help="The path to the .csv file containing the raw testing data.")
     parser.add_argument('--min-label-freq', type=int, default=-1, help="All labels with less occurances will be deleted.")
     parser.add_argument('--max-num-labels', type=int, default=-1, help="Restrict the set of labels to at most n.")
@@ -187,20 +218,21 @@ if __name__ == '__main__':
     # parse arguments
     args = parser.parse_args()
     args = vars(args)
-    # add all hospitals
-    args["hospitals"] = [
-        "AlexianerLudgerus",
-        "Bochum",
-        "Brilon",
-        "Bielefeld",
-        "Castrop",
-        "Hamm",
-        "Herne",
-        "Lippstadt",
-        "OttoFricke",
-        "Ruedesheim",
-        "Wiesbaden",
-        "Witten"
-    ]
 
-    create_data(args)
+    create_data(
+        **args,
+        hospitals = [
+            "AlexianerLudgerus",
+            "Bochum",
+            "Brilon",
+            "Bielefeld",
+            "Castrop",
+            "Hamm",
+            "Herne",
+            "Lippstadt",
+            "OttoFricke",
+            "Ruedesheim",
+            "Wiesbaden",
+            "Witten"
+        ]
+    )

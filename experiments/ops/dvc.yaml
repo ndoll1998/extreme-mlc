@@ -11,14 +11,29 @@ vars:
         output-dir: "model"
 
 stages:
+    split:
+        cmd: python ../../src/split.py
+                --source-file ${data.train-source}
+                --validation-size ${prepare.ValidationSize}
+                --output-dir ${data.output-dir}/split
+        params:
+            - prepare.ValidationSize
+        outs:
+            - ${data.output-dir}/split/train-split.csv
+            - ${data.output-dir}/split/val-split.csv
+
     prepare:
         cmd: python ../../src/prepare.py
                 --code-type ${code-type}
-                --train-source ${data.train-source}
+                --train-source ${data.output-dir}/split/train-split.csv
+                --val-source ${data.output-dir}/split/val-split.csv
                 --test-source ${data.test-source}
                 --min-label-freq ${prepare.MinLabelFrequency}
                 --max-num-labels ${prepare.MaxNumberLabels}
                 --output-dir ${data.output-dir}/prepared
+        deps:
+            - ${data.output-dir}/split/train-split.csv
+            - ${data.output-dir}/split/val-split.csv
         params:
             - prepare.MinLabelFrequency
             - prepare.MaxNumberLabels
@@ -28,6 +43,8 @@ stages:
         outs:
             - ${data.output-dir}/prepared/train_texts.txt
             - ${data.output-dir}/prepared/train_labels.txt
+            - ${data.output-dir}/prepared/val_texts.txt
+            - ${data.output-dir}/prepared/val_labels.txt
             - ${data.output-dir}/prepared/test_texts.txt
             - ${data.output-dir}/prepared/test_labels.txt
             - ${data.output-dir}/prepared/labels.txt:
@@ -50,7 +67,11 @@ stages:
     preprocess:
         cmd: python ../../src/preprocess.py
                 --train-texts ${data.output-dir}/prepared/train_texts.txt
+                --train-labels ${data.output-dir}/prepared/train_labels.txt
+                --val-texts ${data.output-dir}/prepared/val_texts.txt
+                --val-labels ${data.output-dir}/prepared/val_labels.txt
                 --test-texts ${data.output-dir}/prepared/test_texts.txt
+                --test-labels ${data.output-dir}/prepared/test_labels.txt
                 --tokenizer ${preprocess.tokenizer}
                 --max-length ${preprocess.max_length}
                 --pretrained-vocab ../../pretrained/${preprocess.embedding}/vocab.npy
@@ -58,7 +79,11 @@ stages:
                 --output-dir ${data.output-dir}/preprocessed
         deps:
             - ${data.output-dir}/prepared/train_texts.txt
+            - ${data.output-dir}/prepared/val_texts.txt
             - ${data.output-dir}/prepared/test_texts.txt
+            - ${data.output-dir}/prepared/train_labels.txt
+            - ${data.output-dir}/prepared/val_labels.txt
+            - ${data.output-dir}/prepared/test_labels.txt
         params:
             - preprocess.tokenizer
             - preprocess.max_length
@@ -67,8 +92,9 @@ stages:
             - ${data.output-dir}/preprocessed/metrics.json:
                 cache: false
         outs:
-            - ${data.output-dir}/preprocessed/train_input_ids.pkl
-            - ${data.output-dir}/preprocessed/test_input_ids.pkl
+            - ${data.output-dir}/preprocessed/train_data.pkl
+            - ${data.output-dir}/preprocessed/val_data.pkl
+            - ${data.output-dir}/preprocessed/test_data.pkl
             - ${data.output-dir}/preprocessed/vocab.json:
                 cache: false
             - ${data.output-dir}/preprocessed/vectors.npy:
@@ -76,21 +102,17 @@ stages:
 
     train:
         cmd: PYTHONPATH=../../ python ../../src/train.py
-            --train-input-ids ${data.output-dir}/preprocessed/train_input_ids.pkl
-            --test-input-ids ${data.output-dir}/preprocessed/test_input_ids.pkl
-            --train-labels ${data.output-dir}/prepared/train_labels.txt
-            --test-labels ${data.output-dir}/prepared/test_labels.txt
+            --train-data ${data.output-dir}/preprocessed/train_data.pkl
+            --val-data ${data.output-dir}/preprocessed/val_data.pkl
             --vocab ${data.output-dir}/preprocessed/vocab.json
             --embed ${data.output-dir}/preprocessed/vectors.npy
             --label-tree ${model.output-dir}/label_tree.pkl
             --output-dir ${model.output-dir}
         deps:
-            - ${data.output-dir}/preprocessed/train_input_ids.pkl
-            - ${data.output-dir}/preprocessed/test_input_ids.pkl
+            - ${data.output-dir}/preprocessed/train_data.pkl
+            - ${data.output-dir}/preprocessed/val_data.pkl
             - ${data.output-dir}/preprocessed/vocab.json
             - ${data.output-dir}/preprocessed/vectors.npy
-            - ${data.output-dir}/prepared/train_labels.txt
-            - ${data.output-dir}/prepared/test_labels.txt
             - ${model.output-dir}/label_tree.pkl
         params:
             - model.dropout

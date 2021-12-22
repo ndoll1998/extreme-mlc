@@ -1,4 +1,5 @@
 prepare:
+    ValidationSize: 1_500
     MinLabelFrequency: 10
     MaxNumberLabels: -1
 
@@ -25,7 +26,7 @@ model:
 
 trainer:
     regime: "levelwise"
-    eval_interval: 250
+    eval_interval: 100
     train_batch_size: 128
     eval_batch_size: 256
     num_steps: 10_000
