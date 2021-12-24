@@ -18,62 +18,43 @@ from xmlc.plt import ProbabilisticLabelTree
 from xmlc.dataset import NamedTensorDataset
 from xmlc.utils import build_sparse_tensor
 from src.classifiers import LSTMClassifierFactory
+from src.logger import LogHistory
 
-class MetricsTracker(object):
-
-    def __init__(self) -> None:
-        self.history = {}
-
-    def compute_metrics(self,
-        preds:torch.LongTensor, 
-        targets:torch.LongTensor
-    ):
-        return {
-            # first only the metrics that will be logged
-            # in the progress bar
-            "F3": f1_score(preds, targets, k=3),
-            "nDCG3": ndcg(preds, targets, k=3),
-        }, {
-            # now all additional metrics that will be logged
-            # to the logger of choice
-            # precision @ k
-            "P1": precision(preds, targets, k=1),
-            "P3": precision(preds, targets, k=3),
-            "P5": precision(preds, targets, k=5),
-            # recall @ k
-            "R1": recall(preds, targets, k=1),
-            "R3": recall(preds, targets, k=3),
-            "R5": recall(preds, targets, k=5),
-            # f-score @ k
-            "F1": f1_score(preds, targets, k=1),
-            "F5": f1_score(preds, targets, k=5),
-            # ndcg @ k
-            "nDCG1": ndcg(preds, targets, k=1),
-            "nDCG5": ndcg(preds, targets, k=5),
-            # coverage @ k
-            "C1": coverage(preds, targets, k=1),
-            "C3": coverage(preds, targets, k=3),
-            "C5": coverage(preds, targets, k=5),
-            # hits @ k
-            "H1": hits(preds, targets, k=1),
-            "H3": hits(preds, targets, k=3),
-            "H5": hits(preds, targets, k=5),
-        }
-
-    def __call__(self, 
-        preds:torch.LongTensor, 
-        targets:torch.LongTensor
-    ):
-        # compute all metrics
-        log_metrics, add_metrics = self.compute_metrics(preds, targets)
-        # add all to history
-        for name, value in chain(log_metrics.items(), add_metrics.items()):
-            if name not in self.history:
-                self.history[name] = []
-            self.history[name].append(value)
-        # return
-        return log_metrics, add_metrics
-            
+def compute_metrics(
+    preds:torch.LongTensor, 
+    targets:torch.LongTensor
+):
+    return {
+        # first only the metrics that will be logged
+        # in the progress bar
+        "F3": f1_score(preds, targets, k=3),
+        "nDCG3": ndcg(preds, targets, k=3),
+    }, {
+        # now all additional metrics that will be logged
+        # to the logger of choice
+        # precision @ k
+        "P1": precision(preds, targets, k=1),
+        "P3": precision(preds, targets, k=3),
+        "P5": precision(preds, targets, k=5),
+        # recall @ k
+        "R1": recall(preds, targets, k=1),
+        "R3": recall(preds, targets, k=3),
+        "R5": recall(preds, targets, k=5),
+        # f-score @ k
+        "F1": f1_score(preds, targets, k=1),
+        "F5": f1_score(preds, targets, k=5),
+        # ndcg @ k
+        "nDCG1": ndcg(preds, targets, k=1),
+        "nDCG5": ndcg(preds, targets, k=5),
+        # coverage @ k
+        "C1": coverage(preds, targets, k=1),
+        "C3": coverage(preds, targets, k=3),
+        "C5": coverage(preds, targets, k=5),
+        # hits @ k
+        "H1": hits(preds, targets, k=1),
+        "H3": hits(preds, targets, k=3),
+        "H5": hits(preds, targets, k=5),
+    }
 
 def load_data(
     data_path:str, 
@@ -105,7 +86,7 @@ def train_levelwise(
     val_data:InputsAndLabels,
     params:Dict[str, Any],
     output_dir:str
-) -> MetricsTracker:
+) -> LogHistory:
     # use gpu if possible
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -119,8 +100,7 @@ def train_levelwise(
         # create logger
         # logger = pl.loggers.TensorBoardLogger("logs", name="attention-xml", sub_dir="level-%i" % level)
         logger = None # pl.loggers.MLFlowLogger()
-        # create metrics tacker object
-        metrics = MetricsTracker()
+        history = LogHistory()
         # create the trainer module
         trainer_module = LevelTrainerModule(
             level=level,
@@ -132,7 +112,7 @@ def train_levelwise(
             topk=params['topk'],
             train_batch_size=params['train_batch_size'],
             val_batch_size=params['eval_batch_size'],
-            metrics=metrics
+            metrics=compute_metrics
         )
         # create the trainer
         trainer = pl.Trainer(
@@ -141,12 +121,12 @@ def train_levelwise(
             max_steps=params['num_steps'],
             val_check_interval=params['eval_interval'],
             num_sanity_val_steps=0,
-            logger=logger,
+            logger=[history],
             enable_checkpointing=False,
             callbacks=[
                 pl.callbacks.early_stopping.EarlyStopping(
-                    monitor="F3",
-                    patience=50,
+                    monitor="nDCG3",
+                    patience=20,
                     mode="max",
                     verbose=False
                 )
@@ -155,8 +135,8 @@ def train_levelwise(
         # train the model
         trainer.fit(trainer_module)
 
-    # return metrics tracker instance of very last layer
-    return metrics        
+    # return the log-history instance of very last level
+    return history
 
 if __name__ == '__main__':
    
@@ -210,7 +190,7 @@ if __name__ == '__main__':
     }[params['trainer']['regime']]
     
     # train model
-    metrics = training_regime(
+    history = training_regime(
         tree=tree,
         model=model, 
         train_data=train_data, 
@@ -223,19 +203,28 @@ if __name__ == '__main__':
     torch.save(model.state_dict(), os.path.join(args.output_dir, "model.bin"))
     
     # save final metrics
-    final_scores = {name: values[-1] for name, values in metrics.history.items()}
+    final_scores = {name: hist.values[-1] for name, hist in history.history.items()}
     with open(os.path.join(args.output_dir, "validation-scores.json"), "w+") as f:
         f.write(json.dumps(final_scores))
 
     # plot metrics
-    fig, axes = plt.subplots(6, 1, figsize=(12, 24), sharex=True)
-    n, m = len(metrics.history["P1"]), params['trainer']['eval_interval']
-    xs = list(range(1, n * m + 1, m)) 
-    for ax, name in zip(axes, ["nDCG", "P", "R", "F", "C", "H"]): 
+    fig, axes = plt.subplots(7, 1, figsize=(12, 28), sharex=True)
+    # plot losses
+    axes[0].plot(history['train_loss'].steps, history['train_loss'].values, label="train")
+    axes[0].plot(history['val_loss'].steps, history['val_loss'].values, label="validation")
+    axes[0].set(
+        title="Train and Validation Loss",
+        xlabel="Loss",
+        ylabel="Global Step"
+    )
+    axes[0].legend()
+    axes[0].grid()
+    # plot metrics
+    for ax, name in zip(axes[1:], ["nDCG", "P", "R", "F", "C", "H"]): 
         # plot ndcg
-        ax.plot(xs, metrics.history['%s1' % name], label="$k=1$")
-        ax.plot(xs, metrics.history['%s3' % name], label="$k=3$")
-        ax.plot(xs, metrics.history['%s5' % name], label="$k=5$")
+        ax.plot(history['%s1' % name].steps, history['%s1' % name].values, label="$k=1$")
+        ax.plot(history['%s3' % name].steps, history['%s3' % name].values, label="$k=3$")
+        ax.plot(history['%s5' % name].steps, history['%s5' % name].values, label="$k=5$")
         ax.set(
             title="%s @ k" % name,
             ylabel=name,
