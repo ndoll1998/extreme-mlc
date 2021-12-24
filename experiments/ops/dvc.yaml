@@ -43,10 +43,15 @@ stages:
         outs:
             - ${data.output-dir}/prepared/train_texts.txt
             - ${data.output-dir}/prepared/train_labels.txt
+            - ${data.output-dir}/prepared/train_info.csv:
+                cache: false
             - ${data.output-dir}/prepared/val_texts.txt
             - ${data.output-dir}/prepared/val_labels.txt
+            - ${data.output-dir}/prepared/val_info.csv:
+                cache: false
             - ${data.output-dir}/prepared/test_texts.txt
             - ${data.output-dir}/prepared/test_labels.txt
+            - ${data.output-dir}/prepared/test_info.csv
             - ${data.output-dir}/prepared/labels.txt:
                 cache: false
             - ${data.output-dir}/prepared/hospitals.txt:
@@ -102,12 +107,12 @@ stages:
 
     train:
         cmd: PYTHONPATH=../../ python ../../src/train.py
-            --train-data ${data.output-dir}/preprocessed/train_data.pkl
-            --val-data ${data.output-dir}/preprocessed/val_data.pkl
-            --vocab ${data.output-dir}/preprocessed/vocab.json
-            --embed ${data.output-dir}/preprocessed/vectors.npy
-            --label-tree ${model.output-dir}/label_tree.pkl
-            --output-dir ${model.output-dir}
+                --train-data ${data.output-dir}/preprocessed/train_data.pkl
+                --val-data ${data.output-dir}/preprocessed/val_data.pkl
+                --vocab ${data.output-dir}/preprocessed/vocab.json
+                --embed ${data.output-dir}/preprocessed/vectors.npy
+                --label-tree ${model.output-dir}/label_tree.pkl
+                --output-dir ${model.output-dir}
         deps:
             - ${data.output-dir}/preprocessed/train_data.pkl
             - ${data.output-dir}/preprocessed/val_data.pkl
@@ -130,7 +135,49 @@ stages:
             - trainer.num_candidates
             - trainer.topk
         metrics:
-            - ${model.output-dir}/metrics.json:
+            - ${model.output-dir}/validation-scores.json:
                 cache: false
         outs:
             - ${model.output-dir}/model.bin
+
+    predict:
+        cmd: PYTHONPATH=../../ python ../../src/predict.py
+                --test-data ${data.output-dir}/preprocessed/test_data.pkl
+                --model-path ${model.output-dir}/model.bin
+                --label-tree ${model.output-dir}/label_tree.pkl
+                --vocab ${data.output-dir}/preprocessed/vocab.json
+                --embed ${data.output-dir}/preprocessed/vectors.npy
+                --output-dir ${model.output-dir}
+        deps:
+            - ${data.output-dir}/preprocessed/test_data.pkl
+            - ${model.output-dir}/model.bin
+            - ${model.output-dir}/label_tree.pkl
+            - ${data.output-dir}/preprocessed/vocab.json
+            - ${data.output-dir}/preprocessed/vectors.npy
+        params:
+            - model.dropout
+            - model.encoder.hidden_size
+            - model.encoder.num_layers
+            - model.attention.type
+            - model.mlp.bias
+            - model.mlp.activation
+            - model.mlp.hidden_layers
+        outs:
+            - ${model.output-dir}/predictions.pkl:
+                cache: false
+            - ${model.output-dir}/targets.pkl:
+                cache: false
+
+    evaluate:
+        cmd: PYTHONPATH=../../ python ../../src/evaluate.py
+                --model-output ${model.output-dir}/predictions.pkl
+                --sparse-targets ${model.output-dir}/targets.pkl
+                --output-dir ${model.output-dir}
+        deps:
+            - ${model.output-dir}/predictions.pkl
+            - ${model.output-dir}/targets.pkl
+        outs:
+            - ${model.output-dir}/test-scores.csv:
+                cache: false
+            - ${model.output-dir}/test-scores.pdf:
+                cache: false

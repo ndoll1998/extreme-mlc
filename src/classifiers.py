@@ -4,7 +4,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from xmlc.modules import MLP, LabelAttentionClassifier
+# import attention-xml modules
+from xmlc.plt import ProbabilisticLabelTree
+from xmlc.modules import ( 
+    MLP,
+    SoftmaxAttention,
+    MultiHeadAttention,
+    LabelAttentionClassifier
+)
 
 class LSTMEncoder(nn.Module):
     """ Basic LSTM Encoder """
@@ -116,5 +123,75 @@ class LSTMClassifier(nn.Module):
         return self.cls(x, input_mask, candidates)
 
 
+class LSTMClassifierFactory(object):
+    
+    def __init__(self, 
+        encoder_hidden_size:int,
+        encoder_num_layers:int,
+        attention_type:str,
+        mlp_hidden_layers:list,
+        mlp_bias:bool,
+        mlp_activation:str,
+        padding_idx:int,
+        dropout:float,
+        emb_init:np.ndarray,
+    ) -> None:
 
+        # build classifier keyword-arguments
+        self.cls_kwargs = dict(
+            hidden_size=encoder_hidden_size,
+            num_layers=encoder_num_layers,
+            emb_init=emb_init,
+            padding_idx=padding_idx,
+            dropout=dropout
+        )
 
+        # get attention type
+        self.attention_module = {
+            'softmax-attention': SoftmaxAttention,
+            'multi-head-attention': MultiHeadAttention
+        }[attention_type]
+
+        # get classifier type
+        self.mlp_layers = [
+            encoder_hidden_size * 2, 
+            *mlp_hidden_layers, 
+            1
+        ]
+        self.mlp_kwargs = dict(
+            bias=mlp_bias,
+            act_fn={
+                'relu': torch.relu
+            }[mlp_activation]
+        )
+
+    def create(self, num_labels:int) -> ProbabilisticLabelTree:
+
+        # create attention module
+        attention = self.attention_module()
+        # create multi-layer perceptron
+        mlp = MLP(*self.mlp_layers, **self.mlp_kwargs)
+        # create classifier
+        return LSTMClassifier(
+            num_labels=num_labels,
+            **self.cls_kwargs,
+            attention=attention,
+            mlp=mlp
+        )
+
+    def __call__(self, num_labels:int) -> ProbabilisticLabelTree:
+        return self.create(num_labels)
+
+    @staticmethod
+    def from_params(params, padding_idx:int, emb_init:np.ndarray):
+        return LSTMClassifierFactory(
+            encoder_hidden_size=params['encoder']['hidden_size'],
+            encoder_num_layers=params['encoder']['num_layers'],
+            attention_type=params['attention']['type'],
+            mlp_hidden_layers=params['mlp']['hidden_layers'],
+            mlp_bias=params['mlp']['bias'],
+            mlp_activation=params['mlp']['activation'],
+            dropout=params['dropout'],
+            padding_idx=padding_idx,
+            emb_init=emb_init
+        )

@@ -5,8 +5,7 @@ import pytorch_lightning as pl
 from treelib import Tree
 from torch.utils.data import Dataset, DataLoader
 from dataclasses import dataclass
-from typing import List, Set
-from .metrics import MetricsTracker
+from typing import List, Set, Callable
 from .plt import ProbabilisticLabelTree
 from .tree_utils import (
     propagate_labels_to_level,
@@ -43,7 +42,7 @@ class End2EndTrainerModule(pl.LightningModule):
         topk:int,
         train_batch_size:int,
         val_batch_size:int,
-        metrics:MetricsTracker
+        metrics:Callable
     ) -> None:
         # initialize lightning module
         super().__init__()
@@ -125,12 +124,7 @@ class End2EndTrainerModule(pl.LightningModule):
         preds = torch.cat(tuple(out['preds'] for out in outputs), dim=0)
         targets = torch.cat(tuple(out['targets'] for out in outputs), dim=0)
         # compute metrics
-        log_metrics, add_metrics = self.metrics(
-            step=self.trainer.global_step,
-            loss=avg_loss.item(),
-            predictions=preds,
-            targets=targets
-        )
+        log_metrics, add_metrics = self.metrics(preds, targets)
         # log metrics
         self.log_dict(log_metrics, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log_dict(add_metrics, on_step=False, on_epoch=True, prog_bar=False, logger=True)
@@ -153,7 +147,7 @@ class LevelTrainerModule(pl.LightningModule):
         topk:int,
         train_batch_size:int,
         val_batch_size:int,
-        metrics:MetricsTracker
+        metrics:Callable
     ) -> None:
         # initialize lightning module
         super().__init__()
@@ -229,12 +223,7 @@ class LevelTrainerModule(pl.LightningModule):
         preds = torch.cat(tuple(out['preds'] for out in outputs), dim=0)
         targets = torch.cat(tuple(out['targets'] for out in outputs), dim=0)
         # compute metrics
-        log_metrics, add_metrics = self.metrics(
-            step=self.trainer.global_step,
-            loss=avg_loss.item(),
-            predictions=preds,
-            targets=targets
-        )
+        log_metrics, add_metrics = self.metrics(preds, targets)
         # log metrics
         self.log_dict(log_metrics, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log_dict(add_metrics, on_step=False, on_epoch=True, prog_bar=False, logger=True)

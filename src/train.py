@@ -7,86 +7,78 @@ import numpy as np
 import pytorch_lightning as pl
 import matplotlib.pyplot as plt
 from treelib import Tree
-from typing import Dict, Tuple, List, Any
+from typing import Dict, Tuple, List, Any, Callable
 # import attention-xml
 from xmlc.trainer import (
     LevelTrainerModule,
     InputsAndLabels
 )
-from xmlc.dataset import NamedTensorDataset
+from xmlc.metrics import *
 from xmlc.plt import ProbabilisticLabelTree
+from xmlc.dataset import NamedTensorDataset
 from xmlc.utils import build_sparse_tensor
-from xmlc.modules import (
-    MLP,
-    SoftmaxAttention,
-    MultiHeadAttention
-)
-from xmlc.metrics import (
-    MetricsTracker,
-    DefaultMetrics
-)
-from src.classifiers import LSTMClassifier
+from src.classifiers import LSTMClassifierFactory
 
+class MetricsTracker(object):
 
-class LSTMClassifierFactory(object):
-    
-    def __init__(self, 
-        params:Dict[str, Any],
-        padding_idx:int,
-        emb_init:np.ndarray,
-    ) -> None:
+    def __init__(self) -> None:
+        self.history = {}
 
-        # build classifier keyword-arguments
-        self.cls_kwargs = dict(
-            hidden_size=params['encoder']['hidden_size'],
-            num_layers=params['encoder']['num_layers'],
-            emb_init=emb_init,
-            padding_idx=vocab['[pad]'],
-            dropout=params['dropout']
-        )
+    def compute_metrics(self,
+        preds:torch.LongTensor, 
+        targets:torch.LongTensor
+    ):
+        return {
+            # first only the metrics that will be logged
+            # in the progress bar
+            "F3": f1_score(preds, targets, k=3),
+            "nDCG3": ndcg(preds, targets, k=3),
+        }, {
+            # now all additional metrics that will be logged
+            # to the logger of choice
+            # precision @ k
+            "P1": precision(preds, targets, k=1),
+            "P3": precision(preds, targets, k=3),
+            "P5": precision(preds, targets, k=5),
+            # recall @ k
+            "R1": recall(preds, targets, k=1),
+            "R3": recall(preds, targets, k=3),
+            "R5": recall(preds, targets, k=5),
+            # f-score @ k
+            "F1": f1_score(preds, targets, k=1),
+            "F5": f1_score(preds, targets, k=5),
+            # ndcg @ k
+            "nDCG1": ndcg(preds, targets, k=1),
+            "nDCG5": ndcg(preds, targets, k=5),
+            # coverage @ k
+            "C1": coverage(preds, targets, k=1),
+            "C3": coverage(preds, targets, k=3),
+            "C5": coverage(preds, targets, k=5),
+            # hits @ k
+            "H1": hits(preds, targets, k=1),
+            "H3": hits(preds, targets, k=3),
+            "H5": hits(preds, targets, k=5),
+        }
 
-        # get attention type
-        self.attention_module = {
-            'softmax-attention': SoftmaxAttention,
-            'multi-head-attention': MultiHeadAttention
-        }[params['attention']['type']]
-
-        # get classifier type
-        self.mlp_layers = [
-            params['encoder']['hidden_size'] * 2, 
-            *params['mlp']['hidden_layers'], 
-            1
-        ]
-        self.mlp_kwargs = dict(
-            bias=params['mlp']['bias'],
-            act_fn={
-                'relu': torch.relu
-            }[params['mlp']['activation']]
-        )
-
-    def create(self, num_labels:int) -> ProbabilisticLabelTree:
-
-        # create attention module
-        attention = self.attention_module()
-        # create multi-layer perceptron
-        mlp = MLP(*self.mlp_layers, **self.mlp_kwargs)
-        # create classifier
-        return LSTMClassifier(
-            num_labels=num_labels,
-            **self.cls_kwargs,
-            attention=attention,
-            mlp=mlp
-        )
-
-    def __call__(self, num_labels:int) -> ProbabilisticLabelTree:
-        return self.create(num_labels)
-
+    def __call__(self, 
+        preds:torch.LongTensor, 
+        targets:torch.LongTensor
+    ):
+        # compute all metrics
+        log_metrics, add_metrics = self.compute_metrics(preds, targets)
+        # add all to history
+        for name, value in chain(log_metrics.items(), add_metrics.items()):
+            if name not in self.history:
+                self.history[name] = []
+            self.history[name].append(value)
+        # return
+        return log_metrics, add_metrics
+            
 
 def load_data(
     data_path:str, 
     padding_idx:int
 ) -> Tuple[InputsAndLabels, InputsAndLabels]:
-
     # load input ids and compute mask
     data = torch.load(data_path)
     input_ids, labels = data['input-ids'], data['labels']
@@ -113,11 +105,10 @@ def train_levelwise(
     val_data:InputsAndLabels,
     params:Dict[str, Any],
     output_dir:str
-) -> List[MetricsTracker]:
+) -> MetricsTracker:
     # use gpu if possible
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    all_metrics = []
     # train each level of the label-tree one after another
     for level in range(model.num_levels - 1):
 
@@ -125,10 +116,11 @@ def train_levelwise(
         print("-" * 17 + ("Training Level %i" % level) + "-" * 17)
         print("-" * 50)
 
-        # create tensorboard logger
-        logger = pl.loggers.TensorBoardLogger("logs", name="attention-xml", sub_dir="level-%i" % level)
-        # create metrics tracker instance
-        metrics = DefaultMetrics()        
+        # create logger
+        # logger = pl.loggers.TensorBoardLogger("logs", name="attention-xml", sub_dir="level-%i" % level)
+        logger = None # pl.loggers.MLFlowLogger()
+        # create metrics tacker object
+        metrics = MetricsTracker()
         # create the trainer module
         trainer_module = LevelTrainerModule(
             level=level,
@@ -148,25 +140,23 @@ def train_levelwise(
             auto_select_gpus=True,
             max_steps=params['num_steps'],
             val_check_interval=params['eval_interval'],
-            limit_val_batches=8,
+            num_sanity_val_steps=0,
             logger=logger,
             enable_checkpointing=False,
             callbacks=[
                 pl.callbacks.early_stopping.EarlyStopping(
-                    monitor="nDCG@3",
+                    monitor="F3",
                     patience=50,
+                    mode="max",
                     verbose=False
                 )
             ]
         )
         # train the model
         trainer.fit(trainer_module)
-        
-        # all metrics tacker to list
-        all_metrics.append(metrics)
 
-    # return tracked metrics per level
-    return all_metrics
+    # return metrics tracker instance of very last layer
+    return metrics        
 
 if __name__ == '__main__':
    
@@ -182,12 +172,12 @@ if __name__ == '__main__':
     # parse arguments    
     args = parser.parse_args()
  
+    # create the output directory
+    os.makedirs(args.output_dir, exist_ok=True)
+    
     # load model and trainer parameters
     with open("params.yaml", "r") as f:
         params = yaml.load(f.read(), Loader=yaml.SafeLoader)
-
-    # create the output directory
-    os.makedirs(args.output_dir, exist_ok=True)
     
     # load pretrained embedding
     with open(args.vocab, "r") as f:
@@ -195,17 +185,6 @@ if __name__ == '__main__':
         padding_idx = vocab['[pad]']
     emb_init = np.load(args.embed)
     
-    # create classifier factory
-    cls_factory = LSTMClassifierFactory(
-        params=params['model'],
-        padding_idx=padding_idx,
-        emb_init=emb_init
-    )
-
-    # load train and validation data
-    train_data = load_data(data_path=args.train_data, padding_idx=padding_idx)
-    val_data = load_data(data_path=args.val_data, padding_idx=padding_idx)
-
     # load label tree
     with open(args.label_tree, "rb") as f:
         tree = pickle.load(f)
@@ -213,9 +192,17 @@ if __name__ == '__main__':
     # create the model
     model = ProbabilisticLabelTree(
         tree=tree,
-        cls_factory=cls_factory
+        cls_factory=LSTMClassifierFactory.from_params(
+            params=params['model'], 
+            padding_idx=padding_idx,
+            emb_init=emb_init
+        )
     ) 
 
+    # load train and validation data
+    train_data = load_data(data_path=args.train_data, padding_idx=padding_idx)
+    val_data = load_data(data_path=args.val_data, padding_idx=padding_idx)
+    
     # check which training regime to use
     training_regime = {
         "levelwise": train_levelwise,
@@ -223,7 +210,7 @@ if __name__ == '__main__':
     }[params['trainer']['regime']]
     
     # train model
-    all_metrics = training_regime(
+    metrics = training_regime(
         tree=tree,
         model=model, 
         train_data=train_data, 
@@ -235,66 +222,26 @@ if __name__ == '__main__':
     # save model to disk
     torch.save(model.state_dict(), os.path.join(args.output_dir, "model.bin"))
     
-    final_metrics = all_metrics[-1].final_metrics()
-    # for levelwise training regime add metrics of intermediate levels
-    for layer, m in enumerate(all_metrics[:-1]):
-        final_metrics["layer-%i" % layer] = m.final_metrics()
-        
     # save final metrics
-    with open(os.path.join(args.output_dir, "metrics.json"), "w+") as f:
-        f.write(json.dumps(final_metrics))
+    final_scores = {name: values[-1] for name, values in metrics.history.items()}
+    with open(os.path.join(args.output_dir, "validation-scores.json"), "w+") as f:
+        f.write(json.dumps(final_scores))
 
     # plot metrics
-    metrics = all_metrics[-1]
-    fig, (ax_loss, ax_dcg, ax_p, ax_c, ax_h) = plt.subplots(5, 1, figsize=(12, 20), sharex=True)
-    # plot losses
-    ax_loss.plot(metrics.steps, metrics.validation_loss, label="validation")
-    ax_loss.set(
-        title="Train and Test Loss",
-        ylabel="Loss"
-    )
-    ax_loss.legend()
-    ax_loss.grid()
-    # plot ndcg
-    ax_dcg.plot(metrics.steps, metrics['nDCG@1'], label="$k=1$")
-    ax_dcg.plot(metrics.steps, metrics['nDCG@3'], label="$k=3$")
-    ax_dcg.plot(metrics.steps, metrics['nDCG@5'], label="$k=5$")
-    ax_dcg.set(
-        title="nDCG @ k",
-        ylabel="nDCG"
-    )
-    ax_dcg.legend()
-    ax_dcg.grid()
-    # plot precision
-    ax_p.plot(metrics.steps, metrics['P@1'], label="$k=1$")
-    ax_p.plot(metrics.steps, metrics['P@3'], label="$k=3$")
-    ax_p.plot(metrics.steps, metrics['P@5'], label="$k=5$")
-    ax_p.set(
-        title="Precision @ k",
-        ylabel="Precision"
-    )
-    ax_p.legend()
-    ax_p.grid()
-    # plot coverage
-    ax_c.plot(metrics.steps, metrics['C@1'], label="$k=1$")
-    ax_c.plot(metrics.steps, metrics['C@3'], label="$k=3$")
-    ax_c.plot(metrics.steps, metrics['C@5'], label="$k=5$")
-    ax_c.set(
-        title="Coverage @ k",
-        ylabel="Coverage"
-    )
-    ax_c.legend()
-    ax_c.grid()
-    # plot precision
-    ax_h.plot(metrics.steps, metrics['H@1'], label="$k=1$")
-    ax_h.plot(metrics.steps, metrics['H@3'], label="$k=3$")
-    ax_h.plot(metrics.steps, metrics['H@5'], label="$k=5$")
-    ax_h.set(
-        title="Hits @ k",
-        ylabel="Hits",
-        xlabel="Global Steps"
-    )
-    ax_h.legend()
-    ax_h.grid()
+    fig, axes = plt.subplots(6, 1, figsize=(12, 24), sharex=True)
+    n, m = len(metrics.history["P1"]), params['trainer']['eval_interval']
+    xs = list(range(1, n * m + 1, m)) 
+    for ax, name in zip(axes, ["nDCG", "P", "R", "F", "C", "H"]): 
+        # plot ndcg
+        ax.plot(xs, metrics.history['%s1' % name], label="$k=1$")
+        ax.plot(xs, metrics.history['%s3' % name], label="$k=3$")
+        ax.plot(xs, metrics.history['%s5' % name], label="$k=5$")
+        ax.set(
+            title="%s @ k" % name,
+            ylabel=name,
+            xlabel="Global Step"
+        )
+        ax.legend()
+        ax.grid()
     # save and show
-    fig.savefig(os.path.join(args.output_dir, "metrics.pdf"))
+    fig.savefig(os.path.join(args.output_dir, "validation-metrics.pdf"))
