@@ -156,11 +156,11 @@ stages:
         trainer.train_batch_size: 128
     outs:
     - path: model/model.bin
-      md5: 7e92fa7e014564530544843c8d6e85de
+      md5: 5ce36ad3d77f9fdadc165f2845e3534b
       size: 186304200
     - path: model/validation-scores.json
-      md5: eeaf4843b4550d55ec1f024175e810e2
-      size: 478
+      md5: 77758f6ae6919d550d5e1cf495fb1c6f
+      size: 545
   split:
     cmd: python ../../src/split.py --source-file /data/share/gsg_consulting/AttentionXML/old_data/ops-combined/train.csv
       --validation-size 1500 --output-dir data/split
@@ -169,11 +169,11 @@ stages:
         prepare.ValidationSize: 1500
     outs:
     - path: data/split/train-split.csv
-      md5: b201a3254bb79334f8459c91ff656649
-      size: 533596582
+      md5: 5aa214174c997d6f23c9f2b6f6dfc3ff
+      size: 533719191
     - path: data/split/val-split.csv
-      md5: 0e85fe782f07ac5b185ffb8fc15ed66b
-      size: 5464825
+      md5: a09d995d4dcbc73649f88c183b4446fc
+      size: 5342216
   predict:
     cmd: PYTHONPATH=../../ python ../../src/predict.py --test-data data/preprocessed/test_data.pkl
       --model-path model/model.bin --label-tree model/label_tree.pkl --vocab data/preprocessed/vocab.json
@@ -192,7 +192,7 @@ stages:
       md5: 5a91f39d3ede26f62cd6423d8fc75232
       size: 216576
     - path: model/model.bin
-      md5: 7e92fa7e014564530544843c8d6e85de
+      md5: 5ce36ad3d77f9fdadc165f2845e3534b
       size: 186304200
     params:
       params.yaml:
@@ -206,25 +206,25 @@ stages:
         - 256
     outs:
     - path: model/predictions.pkl
-      md5: 1d98c02ebd3b1f899d35f51120e20d3d
+      md5: ac6951d2bc4b96690e0ba0999e9bbf08
       size: 27817528
     - path: model/targets.pkl
-      md5: 33b7e42698a8c6b7cfc262db2335d7b5
+      md5: 8b3b49119d33b159c9ddcc737658a10a
       size: 6398584
   evaluate:
     cmd: PYTHONPATH=../../ python ../../src/evaluate.py --model-output model/predictions.pkl
       --sparse-targets model/targets.pkl --output-dir model
     deps:
     - path: model/predictions.pkl
-      md5: 1d98c02ebd3b1f899d35f51120e20d3d
+      md5: ac6951d2bc4b96690e0ba0999e9bbf08
       size: 27817528
     - path: model/targets.pkl
-      md5: 33b7e42698a8c6b7cfc262db2335d7b5
+      md5: 8b3b49119d33b159c9ddcc737658a10a
       size: 6398584
     outs:
     - path: model/test-scores.csv
-      md5: ce267fa0250c0489228b81224f84dd58
-      size: 1798
+      md5: 4b724a432c86c00ac3d70099c35a9180
+      size: 1793
     - path: model/test-scores.pdf
-      md5: 1a0fe1c5142c18fb5e6a7f29c5c948a7
-      size: 15697
+      md5: 3af6337938faf1e344574a9cbcb5a541
+      size: 15694

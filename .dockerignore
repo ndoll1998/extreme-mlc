@@ -1,0 +1,8 @@
+.git/
+.dvc/
+**/__pycache__/
+datasets/
+notebooks/
+experiments/*/data/
+experiments/*/model/
+experiments/*/dvc.lock

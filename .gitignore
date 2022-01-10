@@ -2,5 +2,6 @@
 __pycache__/
 model/
 data/
+datasets/
 logs/
 pretrained/

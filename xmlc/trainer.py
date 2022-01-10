@@ -17,6 +17,10 @@ from .dataset import (
     GroupWeightedMultiLabelDataset
 )
 
+# get the number of dataloader-workers to use
+# multiple loaders might be problematic in docker containers
+num_dataloader_workers = int(os.environ.get("NUM_DATALOADER_WORKERS", "4"))
+
 @dataclass(frozen=True)
 class InputsAndLabels(object):
     """ Helper class storing an input dataset together with the corresponding labels """
@@ -75,11 +79,11 @@ class End2EndTrainerModule(pl.LightningModule):
 
     def train_dataloader(self) -> DataLoader:
         # build the train dataloader
-        return DataLoader(self.train_dataset, batch_size=self.train_batch_size, shuffle=True, num_workers=4)
+        return DataLoader(self.train_dataset, batch_size=self.train_batch_size, shuffle=True, num_workers=num_dataloader_workers)
 
     def val_dataloader(self) -> DataLoader:
         # build the validation dataloader
-        return DataLoader(self.val_dataset, batch_size=self.val_batch_size, shuffle=False, num_workers=4)
+        return DataLoader(self.val_dataset, batch_size=self.val_batch_size, shuffle=False, num_workers=num_dataloader_workers)
 
     def training_step(self, batch, batch_idx):
         # pop labels from batch and predict
@@ -173,12 +177,12 @@ class LevelTrainerModule(pl.LightningModule):
     def train_dataloader(self) -> DataLoader:
         # build the dataset and the dataloader from it
         dataset = self.build_dataset(self.train_data)
-        return DataLoader(dataset, batch_size=self.train_batch_size, shuffle=True, num_workers=4)
+        return DataLoader(dataset, batch_size=self.train_batch_size, shuffle=True, num_workers=num_dataloader_workers)
 
     def val_dataloader(self) -> DataLoader:
         # build the dataset and the dataloader from it
         dataset = self.build_dataset(self.val_data)
-        return DataLoader(dataset, batch_size=self.val_batch_size, shuffle=False, num_workers=4)
+        return DataLoader(dataset, batch_size=self.val_batch_size, shuffle=False, num_workers=num_dataloader_workers)
 
     def training_step(self, batch, batch_idx):
         # pop labels from batch and predict

@@ -93,8 +93,8 @@ def convert_csv_to_format(
     # filter hospitals
     data = filter_hospitals(data, valid_hospitals)
     # build info dataframe and save to disk
-    info = data[['hospital_id', 'case_id']]
-    info.to_csv(out_info_fpath) 
+    # info = data[['hospital_id', 'case_id']]
+    # info.to_csv(out_info_fpath) 
     # get all documents and corresponding labels
     all_texts = data['documents_merged'].tolist()
     all_labels = data[code_type].tolist()
