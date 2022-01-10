@@ -119,7 +119,7 @@ def train_levelwise(
             gpus=1,
             auto_select_gpus=True,
             max_steps=params['num_steps'],
-            val_check_interval=params['eval_interval'],
+            val_check_interval=max(min(params['eval_interval'], len(train_data.inputs) // params['train_batch_size']), 1),
             num_sanity_val_steps=0,
             logger=[history],
             enable_checkpointing=False,

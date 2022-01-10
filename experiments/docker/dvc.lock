@@ -1,0 +1,194 @@
+schema: '2.0'
+stages:
+  split:
+    cmd: python3.8 ../../src/split.py --texts-file ../../datasets/docker/trn_texts_matched_by_date_filtered_ops.txt
+      --labels-file ../../datasets/docker/trn_labels_matched_by_date_filtered_ops.txt
+      --validation-size 1500 --output-dir data/split
+    params:
+      params.yaml:
+        prepare.ValidationSize: 1500
+    outs:
+    - path: data/split/train_labels.txt
+      md5: 201a915d5b20e4d1936b3d57a3d0ceee
+      size: 7988
+    - path: data/split/train_texts.txt
+      md5: 837e3bdbbf51381e5f1d3d8bf23753f3
+      size: 1022213
+    - path: data/split/val_labels.txt
+      md5: 02e2026e04a9880cfd3f348353469baa
+      size: 750
+    - path: data/split/val_texts.txt
+      md5: d5ec751da5316ed62767ca9c1dc25881
+      size: 92674
+  preprocess:
+    cmd: python3.8 ../../src/preprocess.py --train-texts data/split/train_texts.txt
+      --train-labels data/split/train_labels.txt --val-texts data/split/val_texts.txt
+      --val-labels data/split/val_labels.txt --test-texts ../../datasets/docker/tst_texts_matched_by_date_filtered_ops.txt
+      --test-labels ../../datasets/docker/tst_labels_matched_by_date_filtered_ops.txt
+      --tokenizer Spacy --max-length 256 --pretrained-vocab ../../pretrained/gsg-fasttext/vocab.npy
+      --pretrained-embed ../../pretrained/gsg-fasttext/vectors.npy --output-dir data/preprocessed
+    deps:
+    - path: data/split/train_labels.txt
+      md5: 201a915d5b20e4d1936b3d57a3d0ceee
+      size: 7988
+    - path: data/split/train_texts.txt
+      md5: 837e3bdbbf51381e5f1d3d8bf23753f3
+      size: 1022213
+    - path: data/split/val_labels.txt
+      md5: 02e2026e04a9880cfd3f348353469baa
+      size: 750
+    - path: data/split/val_texts.txt
+      md5: d5ec751da5316ed62767ca9c1dc25881
+      size: 92674
+    params:
+      params.yaml:
+        preprocess.embedding: gsg-fasttext
+        preprocess.max_length: 256
+        preprocess.tokenizer: Spacy
+    outs:
+    - path: data/preprocessed/metrics.json
+      md5: d7389630f95f3d7a618b4803587c1897
+      size: 179
+    - path: data/preprocessed/test_data.pkl
+      md5: be3fa143ee9857394f5dad4f8fb6a352
+      size: 300280
+    - path: data/preprocessed/train_data.pkl
+      md5: 0af8e2b0bfe91ab8c7184af8599dc46a
+      size: 1082744
+    - path: data/preprocessed/val_data.pkl
+      md5: 779a2aa4f8e350bbad6714be2045234b
+      size: 119224
+    - path: data/preprocessed/vectors.npy
+      md5: 1e2c8df7f6526dd555bb7116ddc9cfeb
+      size: 16412128
+    - path: data/preprocessed/vocab.json
+      md5: d7a23c025ef752b20dfeed976e038928
+      size: 81116
+  build_labels_list:
+    cmd: python3.8 ../../src/build_labels_list.py --train-labels data/split/train_labels.txt
+      --val-labels data/split/val_labels.txt --test-labels ../../datasets/docker/tst_labels_matched_by_date_filtered_ops.txt
+      --output-dir data
+    deps:
+    - path: data/split/train_labels.txt
+      md5: 201a915d5b20e4d1936b3d57a3d0ceee
+      size: 7988
+    - path: data/split/val_labels.txt
+      md5: 02e2026e04a9880cfd3f348353469baa
+      size: 750
+    outs:
+    - path: data/labels.txt
+      md5: d7642a3d28a0fdb77b3daf6210c37809
+      size: 2718
+  build_label_tree:
+    cmd: PYTHONPATH='../../' python3.8 ../../src/build_label_tree.py --labels-file
+      data/labels.txt --group-id-chars 0 --output-file model/label_tree.pkl
+    deps:
+    - path: data/labels.txt
+      md5: d7642a3d28a0fdb77b3daf6210c37809
+      size: 2718
+    params:
+      params.yaml:
+        label_tree.group_id_chars: 0
+    outs:
+    - path: model/label_tree.pkl
+      md5: 546c1c19f9c32f8ead0c0d5fd4bc2e4f
+      size: 32621
+  train:
+    cmd: PYTHONPATH=../../ python3.8 ../../src/train.py --train-data data/preprocessed/train_data.pkl
+      --val-data data/preprocessed/val_data.pkl --vocab data/preprocessed/vocab.json
+      --embed data/preprocessed/vectors.npy --label-tree model/label_tree.pkl --output-dir
+      model
+    deps:
+    - path: data/preprocessed/train_data.pkl
+      md5: 0af8e2b0bfe91ab8c7184af8599dc46a
+      size: 1082744
+    - path: data/preprocessed/val_data.pkl
+      md5: 779a2aa4f8e350bbad6714be2045234b
+      size: 119224
+    - path: data/preprocessed/vectors.npy
+      md5: 1e2c8df7f6526dd555bb7116ddc9cfeb
+      size: 16412128
+    - path: data/preprocessed/vocab.json
+      md5: d7a23c025ef752b20dfeed976e038928
+      size: 81116
+    - path: model/label_tree.pkl
+      md5: 546c1c19f9c32f8ead0c0d5fd4bc2e4f
+      size: 32621
+    params:
+      params.yaml:
+        model.attention.type: softmax-attention
+        model.dropout: 0.5
+        model.encoder.hidden_size: 256
+        model.encoder.num_layers: 1
+        model.mlp.activation: relu
+        model.mlp.bias: true
+        model.mlp.hidden_layers:
+        - 256
+        trainer.eval_batch_size: 256
+        trainer.eval_interval: 100
+        trainer.num_candidates:
+        trainer.num_steps: 10000
+        trainer.regime: levelwise
+        trainer.topk: 100
+        trainer.train_batch_size: 128
+    outs:
+    - path: model/model.bin
+      md5: 318559f605c3e5aa0ddafd6c7cc90cce
+      size: 15618440
+    - path: model/validation-scores.json
+      md5: f8b322798bd0a07a068bd5d9f227336b
+      size: 554
+  predict:
+    cmd: PYTHONPATH=../../ python3.8 ../../src/predict.py --test-data data/preprocessed/test_data.pkl
+      --model-path model/model.bin --label-tree model/label_tree.pkl --vocab data/preprocessed/vocab.json
+      --embed data/preprocessed/vectors.npy --output-dir model
+    deps:
+    - path: data/preprocessed/test_data.pkl
+      md5: be3fa143ee9857394f5dad4f8fb6a352
+      size: 300280
+    - path: data/preprocessed/vectors.npy
+      md5: 1e2c8df7f6526dd555bb7116ddc9cfeb
+      size: 16412128
+    - path: data/preprocessed/vocab.json
+      md5: d7a23c025ef752b20dfeed976e038928
+      size: 81116
+    - path: model/label_tree.pkl
+      md5: 546c1c19f9c32f8ead0c0d5fd4bc2e4f
+      size: 32621
+    - path: model/model.bin
+      md5: 318559f605c3e5aa0ddafd6c7cc90cce
+      size: 15618440
+    params:
+      params.yaml:
+        model.attention.type: softmax-attention
+        model.dropout: 0.5
+        model.encoder.hidden_size: 256
+        model.encoder.num_layers: 1
+        model.mlp.activation: relu
+        model.mlp.bias: true
+        model.mlp.hidden_layers:
+        - 256
+    outs:
+    - path: model/predictions.pkl
+      md5: 8a6255d85a40d22c18ffc561fe7a40b5
+      size: 115960
+    - path: model/targets.pkl
+      md5: 96a55659b166ef892496169f6324f9c2
+      size: 16888
+  evaluate:
+    cmd: PYTHONPATH=../../ python3.8 ../../src/evaluate.py --model-output model/predictions.pkl
+      --sparse-targets model/targets.pkl --output-dir model
+    deps:
+    - path: model/predictions.pkl
+      md5: 8a6255d85a40d22c18ffc561fe7a40b5
+      size: 115960
+    - path: model/targets.pkl
+      md5: 96a55659b166ef892496169f6324f9c2
+      size: 16888
+    outs:
+    - path: model/test-scores.csv
+      md5: 6bff3db738a4ce4e473d3b4c14e9003e
+      size: 1776
+    - path: model/test-scores.pdf
+      md5: 7fba28510a8c57abfa7a2a7d861e2abe
+      size: 15124

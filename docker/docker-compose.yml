@@ -4,12 +4,13 @@ services:
     train:
         container_name: gsg-train
         image: gsg-train-image
-        command: dvc repro experiments/eurlex57k/dvc.yaml
+        command: dvc repro experiments/docker/dvc.yaml
         build:
             context: ../
             dockerfile: docker/Dockerfile
         volumes:
-            - ../datasets:/app/datasets
+            # - ../datasets/ops:/app/datasets/ops
+            - /data/share/gsg_consulting/ehahn/out_data:/app/datasets/docker
             - ./model:/app/experiments/eurlex57k/model
         environment:
             - NUM_DATALOADER_WORKERS=1
