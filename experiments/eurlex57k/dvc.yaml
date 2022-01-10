@@ -1,0 +1,176 @@
+vars:
+    - params.yaml
+    - code-type: "ops_codes"
+    - data:
+        output-dir: "data"
+        train-source: "../../datasets/eurlex57k/train.csv"
+        test-source: "../../datasets/eurlex57k/test.csv"
+    - model:
+        output-dir: "model"
+
+stages:
+    split:
+        cmd: python3.8 ../../src/split.py
+                --source-file ${data.train-source}
+                --validation-size ${prepare.ValidationSize}
+                --output-dir ${data.output-dir}/split
+        params:
+            - prepare.ValidationSize
+        outs:
+            - ${data.output-dir}/split/train-split.csv
+            - ${data.output-dir}/split/val-split.csv
+
+    prepare:
+        cmd: python3.8 ../../src/prepare.py
+                --code-type ${code-type}
+                --train-source ${data.output-dir}/split/train-split.csv
+                --val-source ${data.output-dir}/split/val-split.csv
+                --test-source ${data.test-source}
+                --min-label-freq ${prepare.MinLabelFrequency}
+                --max-num-labels ${prepare.MaxNumberLabels}
+                --output-dir ${data.output-dir}/prepared
+        deps:
+            - ${data.output-dir}/split/train-split.csv
+            - ${data.output-dir}/split/val-split.csv
+        params:
+            - prepare.MinLabelFrequency
+            - prepare.MaxNumberLabels
+        metrics:
+            - ${data.output-dir}/prepared/metrics.json:
+                cache: false
+        outs:
+            - ${data.output-dir}/prepared/train_texts.txt
+            - ${data.output-dir}/prepared/train_labels.txt
+            - ${data.output-dir}/prepared/val_texts.txt
+            - ${data.output-dir}/prepared/val_labels.txt
+            - ${data.output-dir}/prepared/test_texts.txt
+            - ${data.output-dir}/prepared/test_labels.txt
+            - ${data.output-dir}/prepared/labels.txt:
+                cache: false
+            - ${data.output-dir}/prepared/hospitals.txt:
+                cache: false
+
+    build_label_tree:
+        cmd: PYTHONPATH='../../' python3.8 ../../src/build_label_tree.py
+                --labels-file ${data.output-dir}/prepared/labels.txt
+                --group-id-chars ${label_tree.group_id_chars}
+                --output-file ${model.output-dir}/label_tree.pkl
+        deps:
+            - ${data.output-dir}/prepared/labels.txt
+        params:
+            - label_tree.group_id_chars
+        outs:
+            - ${model.output-dir}/label_tree.pkl
+    
+    preprocess:
+        cmd: python3.8 ../../src/preprocess.py
+                --train-texts ${data.output-dir}/prepared/train_texts.txt
+                --train-labels ${data.output-dir}/prepared/train_labels.txt
+                --val-texts ${data.output-dir}/prepared/val_texts.txt
+                --val-labels ${data.output-dir}/prepared/val_labels.txt
+                --test-texts ${data.output-dir}/prepared/test_texts.txt
+                --test-labels ${data.output-dir}/prepared/test_labels.txt
+                --tokenizer ${preprocess.tokenizer}
+                --max-length ${preprocess.max_length}
+                --pretrained-vocab ../../pretrained/${preprocess.embedding}/vocab.npy
+                --pretrained-embed ../../pretrained/${preprocess.embedding}/vectors.npy
+                --output-dir ${data.output-dir}/preprocessed
+        deps:
+            - ${data.output-dir}/prepared/train_texts.txt
+            - ${data.output-dir}/prepared/val_texts.txt
+            - ${data.output-dir}/prepared/test_texts.txt
+            - ${data.output-dir}/prepared/train_labels.txt
+            - ${data.output-dir}/prepared/val_labels.txt
+            - ${data.output-dir}/prepared/test_labels.txt
+        params:
+            - preprocess.tokenizer
+            - preprocess.max_length
+            - preprocess.embedding
+        metrics:
+            - ${data.output-dir}/preprocessed/metrics.json:
+                cache: false
+        outs:
+            - ${data.output-dir}/preprocessed/train_data.pkl
+            - ${data.output-dir}/preprocessed/val_data.pkl
+            - ${data.output-dir}/preprocessed/test_data.pkl
+            - ${data.output-dir}/preprocessed/vocab.json:
+                cache: false
+            - ${data.output-dir}/preprocessed/vectors.npy:
+                cache: false
+
+    train:
+        cmd: PYTHONPATH=../../ python3.8 ../../src/train.py
+                --train-data ${data.output-dir}/preprocessed/train_data.pkl
+                --val-data ${data.output-dir}/preprocessed/val_data.pkl
+                --vocab ${data.output-dir}/preprocessed/vocab.json
+                --embed ${data.output-dir}/preprocessed/vectors.npy
+                --label-tree ${model.output-dir}/label_tree.pkl
+                --output-dir ${model.output-dir}
+        deps:
+            - ${data.output-dir}/preprocessed/train_data.pkl
+            - ${data.output-dir}/preprocessed/val_data.pkl
+            - ${data.output-dir}/preprocessed/vocab.json
+            - ${data.output-dir}/preprocessed/vectors.npy
+            - ${model.output-dir}/label_tree.pkl
+        params:
+            - model.dropout
+            - model.encoder.hidden_size
+            - model.encoder.num_layers
+            - model.attention.type
+            - model.mlp.bias
+            - model.mlp.activation
+            - model.mlp.hidden_layers
+            - trainer.regime
+            - trainer.eval_interval
+            - trainer.train_batch_size
+            - trainer.eval_batch_size
+            - trainer.num_steps
+            - trainer.num_candidates
+            - trainer.topk
+        metrics:
+            - ${model.output-dir}/validation-scores.json:
+                cache: false
+        outs:
+            - ${model.output-dir}/model.bin
+
+    predict:
+        cmd: PYTHONPATH=../../ python3.8 ../../src/predict.py
+                --test-data ${data.output-dir}/preprocessed/test_data.pkl
+                --model-path ${model.output-dir}/model.bin
+                --label-tree ${model.output-dir}/label_tree.pkl
+                --vocab ${data.output-dir}/preprocessed/vocab.json
+                --embed ${data.output-dir}/preprocessed/vectors.npy
+                --output-dir ${model.output-dir}
+        deps:
+            - ${data.output-dir}/preprocessed/test_data.pkl
+            - ${model.output-dir}/model.bin
+            - ${model.output-dir}/label_tree.pkl
+            - ${data.output-dir}/preprocessed/vocab.json
+            - ${data.output-dir}/preprocessed/vectors.npy
+        params:
+            - model.dropout
+            - model.encoder.hidden_size
+            - model.encoder.num_layers
+            - model.attention.type
+            - model.mlp.bias
+            - model.mlp.activation
+            - model.mlp.hidden_layers
+        outs:
+            - ${model.output-dir}/predictions.pkl:
+                cache: false
+            - ${model.output-dir}/targets.pkl:
+                cache: false
+
+    evaluate:
+        cmd: PYTHONPATH=../../ python3.8 ../../src/evaluate.py
+                --model-output ${model.output-dir}/predictions.pkl
+                --sparse-targets ${model.output-dir}/targets.pkl
+                --output-dir ${model.output-dir}
+        deps:
+            - ${model.output-dir}/predictions.pkl
+            - ${model.output-dir}/targets.pkl
+        outs:
+            - ${model.output-dir}/test-scores.csv:
+                cache: false
+            - ${model.output-dir}/test-scores.pdf:
+                cache: false
