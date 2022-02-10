@@ -8,3 +8,4 @@ pytorch-lightning==1.5.8
 spacy==3.2.0
 matplotlib==3.5.1
 treelib==1.6.1
+sentence-transformers==2.2.0
